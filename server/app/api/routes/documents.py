@@ -1,0 +1,79 @@
+import hashlib
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from server.app.core.security import CurrentUser, get_current_user
+from server.app.db import repositories as repo
+from server.app.db.session import get_db_session
+from server.app.schemas.documents import Document, DocumentListResponse, UploadResponse, UploadResponseItem
+from server.app.services import storage_r2
+from server.app.utils.ids import new_uuid
+
+router = APIRouter(prefix="/api/workspaces/{workspace_id}/documents")
+
+
+def _to_document(row: dict) -> Document:
+    return Document.model_validate(row)
+
+
+async def _ensure_workspace(session: AsyncSession, workspace_id: str, user_id: str) -> dict:
+    ws = await repo.get_workspace(session, workspace_id=workspace_id, user_id=user_id)
+    if not ws:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
+    return ws
+
+
+@router.post("/upload", response_model=UploadResponse)
+async def upload_documents(
+    workspace_id: str,
+    files: list[UploadFile] = File(...),
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    await _ensure_workspace(session, workspace_id, current_user.id)
+    if not files:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No files provided")
+
+    items: list[UploadResponseItem] = []
+    for upload in files:
+        data = await upload.read()
+        checksum = hashlib.sha256(data).hexdigest()
+        original_filename = upload.filename or "upload.bin"
+        title = original_filename
+        doc_row = await repo.create_document(session, workspace_id=workspace_id, title=title, source_type="upload")
+
+        file_id = new_uuid()
+        ext = Path(original_filename).suffix
+        r2_key = f"workspace/{workspace_id}/document/{doc_row['id']}/{file_id}{ext}"
+
+        await storage_r2.upload_file(data, key=r2_key, content_type=upload.content_type)
+
+        file_row = await repo.create_file(
+            session=session,
+            document_id=doc_row["id"],
+            r2_key=r2_key,
+            original_filename=original_filename,
+            mime_type=upload.content_type or "application/octet-stream",
+            size_bytes=len(data),
+            checksum=checksum,
+            file_id=file_id,
+        )
+
+        await repo.create_parse_job(session=session, document_id=doc_row["id"])
+
+        items.append(UploadResponseItem(document=_to_document(doc_row), file_id=str(file_row["id"])))
+
+    return UploadResponse(items=items)
+
+
+@router.get("", response_model=DocumentListResponse)
+async def list_documents(
+    workspace_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    await _ensure_workspace(session, workspace_id, current_user.id)
+    rows = await repo.list_documents(session, workspace_id=workspace_id)
+    return DocumentListResponse(items=[_to_document(r) for r in rows])
