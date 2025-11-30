@@ -16,9 +16,9 @@ class CurrentUser:
 def decode_token(token: str) -> CurrentUser:
     settings = get_settings()
     try:
-        payload = jwt.decode(token, settings.auth.jwt_secret, algorithms=["HS256"])
+        payload = jwt.decode(token, settings.auth.jwt_secret, algorithms=["HS256"], options={"verify_aud": False, "leeway": 60})
     except jwt.PyJWTError as exc:  # type: ignore[attr-defined]
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from exc
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid token: {str(exc)}") from exc
 
     user_id = payload.get("sub")
     email = payload.get("email")

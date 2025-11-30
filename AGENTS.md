@@ -161,6 +161,29 @@ Agent **không được** tự ý thay đổi layout high‑level này trừ khi
   - Hỏi lại user (hoặc ghi rõ assumption trong comment/PR).
   - Không “tự sáng tác” kiến trúc mới.
 
+**Task handoff pattern (khuyến nghị)**
+
+- Khi giao task cho agent code, nên ghi rõ:
+  - Đang làm **Phase mấy** (Phase 1/2/3…).
+  - Các file spec/design cần đọc lại:  
+    - `docs/requirements/requirements-phase-X.md` tương ứng phase.  
+    - `docs/design/phase-X-design.md` tương ứng phase.  
+    - 1–2 file gần nhất trong `docs/implement/*` liên quan feature đó.
+- Agent code khi bắt đầu task nên:
+  - Tóm tắt lại (ngắn gọn) mình hiểu gì từ requirements/design + implement logs trước khi sửa code.
+  - Ghi rõ mọi **assumption quan trọng** (nếu phải đoán) trong file implement tương ứng.
+
+**Khi code lệch spec**
+
+- Nếu vì lý do thực tế (limit lib, constraint infra, technical trade‑off, bug của engine…) mà implementation **không thể** bám 100% spec:
+  - Ưu tiên vẫn cố giữ **kiến trúc tổng** như trong `architecture-overview.md`.
+  - Ghi rõ:
+    - Chỗ lệch: endpoint nào / hàm nào / flow nào khác với spec.
+    - Lý do: constraint gì, workaround ra sao.
+  - Nơi ghi:
+    - Trong file `docs/implement/implement-*.md` của task đó (mục Notes / TODO).
+    - Nếu cần, bổ sung TODO để phase sau có thể đưa kiến trúc/code quay lại gần spec hơn.
+
 ---
 
 ## 6. Commands (gợi ý, tuỳ project mới)
@@ -201,6 +224,30 @@ Mục đích:
   - `docs/design/*` (how),
   - `docs/implement/*` (đã làm tới đâu),
   là có thể tiếp tục triển khai mà không đoán mò.
+
+---
+
+## 8. Research logs khi dùng Perplexity MCP
+
+Khi agent sử dụng **Perplexity MCP** để research (bất kỳ topic nào), bắt buộc phải:
+
+- Ghi lại kết quả research vào file mới hoặc cập nhật file trong `docs/research/`:
+  - Tên file: `research-<topic-or-feature>.md` (kebab-case tiếng Anh, mô tả chủ đề tra cứu).
+  - Ví dụ:
+    - `docs/research/research-supabase-jwt-verification.md`
+    - `docs/research/research-google-docai-pricing.md`
+- Nội dung tối thiểu cho mỗi lần research:
+  - Ngày giờ + lý do search (context task).
+  - Prompt / câu hỏi đã gửi cho Perplexity MCP.
+  - Tóm tắt các điểm chính tìm được (bullet ngắn).
+  - Nếu cần, trích dẫn raw đoạn quan trọng (không nhất thiết toàn bộ response, ưu tiên phần có giá trị).
+
+Mục đích:
+- Giữ lịch sử research có cấu trúc, để lần sau (hoặc agent khác) không cần hỏi lại cùng một câu.
+- Cho phép đối chiếu giữa thiết kế/implementation và tài liệu đã tra cứu (đặc biệt với Supabase, Document AI, RAG‑Anything, v.v.).
+
+Khi bắt đầu một task mới có liên quan tới chủ đề đã research:
+- Agent nên đọc lại file tương ứng trong `docs/research/*` trước khi gọi Perplexity MCP thêm lần nữa.
 
 ---
 
