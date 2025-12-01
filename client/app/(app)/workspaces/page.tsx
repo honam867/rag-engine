@@ -1,42 +1,33 @@
 "use client";
 
-import { CreateWorkspaceForm } from "@/features/workspaces/components/CreateWorkspaceForm";
-import { WorkspaceList } from "@/features/workspaces/components/WorkspaceList";
 import { useWorkspacesList } from "@/features/workspaces/hooks/useWorkspaces";
-import { Loader2 } from "lucide-react";
+import { Folder } from "lucide-react";
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
 
 export default function WorkspacesPage() {
-  const { data, isLoading, isError } = useWorkspacesList();
+  const { data: workspaces, isLoading } = useWorkspacesList();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (workspaces && workspaces.length > 0) {
+      router.replace(`/workspaces/${workspaces[0].id}`);
+    }
+  }, [workspaces, router]);
+
+  if (isLoading) {
+      return (
+        <div className="flex items-center justify-center h-full">
+            <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+        </div>
+      );
+  }
 
   return (
-    <div className="space-y-8 max-w-5xl mx-auto">
-      <div className="flex flex-col gap-2">
-        <h1 className="text-3xl font-bold tracking-tight">Workspaces</h1>
-        <p className="text-muted-foreground">
-          Manage your knowledge bases and collections.
-        </p>
-      </div>
-
-      <div className="grid gap-8 lg:grid-cols-[1fr_300px]">
-        <div className="space-y-6">
-          <div>
-            <h2 className="text-lg font-semibold mb-4">Your Workspaces</h2>
-            {isLoading && (
-              <div className="flex justify-center py-8">
-                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-              </div>
-            )}
-            {isError && (
-              <p className="text-sm text-destructive">Failed to load workspaces.</p>
-            )}
-            {data ? <WorkspaceList workspaces={data} /> : null}
-          </div>
-        </div>
-
-        <div>
-          <CreateWorkspaceForm />
-        </div>
-      </div>
+    <div className="flex flex-col items-center justify-center h-full text-muted-foreground p-8 text-center">
+      <Folder className="h-16 w-16 mb-4 opacity-20" />
+      <h2 className="text-xl font-medium mb-2">No Workspace Selected</h2>
+      <p>Create a new workspace to get started.</p>
     </div>
   );
 }

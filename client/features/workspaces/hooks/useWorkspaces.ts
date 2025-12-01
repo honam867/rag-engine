@@ -8,6 +8,13 @@ export function useWorkspacesList() {
   return useQuery({
     queryKey: workspaceKeys.list(),
     queryFn: fetchWorkspaces,
+    select: (data) => {
+      // Sort by created_at desc (newest first)
+      return [...data].sort((a, b) => {
+        if (!a.created_at || !b.created_at) return 0;
+        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+      });
+    },
   });
 }
 
