@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from server.app.core.constants import ROLE_AI, ROLE_USER
 from server.app.core.security import CurrentUser, get_current_user
 from server.app.db import repositories as repo
 from server.app.db.session import get_db_session
@@ -40,13 +41,13 @@ async def create_message(
 ):
     await _ensure_conversation(session, conversation_id, current_user.id)
     user_msg = await repo.create_message(
-        session=session, conversation_id=conversation_id, role="user", content=body.content, metadata=None
+        session=session, conversation_id=conversation_id, role=ROLE_USER, content=body.content, metadata=None
     )
     # Optional mock AI reply for Phase 1
     ai_msg = await repo.create_message(
         session=session,
         conversation_id=conversation_id,
-        role="ai",
+        role=ROLE_AI,
         content="Engine chưa kết nối",
         metadata={"mock": True},
     )

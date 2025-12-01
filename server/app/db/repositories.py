@@ -5,6 +5,11 @@ from typing import Any, Mapping, Sequence
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from server.app.core.constants import (
+    DOCUMENT_STATUS_PENDING,
+    PARSE_JOB_STATUS_QUEUED,
+    PARSER_TYPE_GCP_DOCAI,
+)
 from server.app.db import models
 from server.app.utils.ids import new_uuid
 
@@ -57,7 +62,7 @@ async def create_document(session: AsyncSession, workspace_id: str, title: str, 
             workspace_id=workspace_id,
             title=title,
             source_type=source_type,
-            status="pending",
+            status=DOCUMENT_STATUS_PENDING,
         )
         .returning(models.documents)
     )
@@ -124,8 +129,8 @@ async def create_parse_job(session: AsyncSession, document_id: str) -> Mapping[s
         .values(
             id=job_id,
             document_id=document_id,
-            status="queued",
-            parser_type="gcp_docai",
+            status=PARSE_JOB_STATUS_QUEUED,
+            parser_type=PARSER_TYPE_GCP_DOCAI,
         )
         .returning(models.parse_jobs)
     )
