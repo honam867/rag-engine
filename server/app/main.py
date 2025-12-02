@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 import sqlalchemy as sa
+from fastapi.middleware.cors import CORSMiddleware
 
 from server.app.api.routes import conversations, documents, me, messages, workspaces
 from server.app.core.logging import get_logger, setup_logging
@@ -11,6 +12,18 @@ setup_logging()
 logger = get_logger(__name__)
 
 app = FastAPI(title="rag-engine")
+
+# Basic CORS for local dev (frontend on 3000). Adjust origins if needed.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.on_event("startup")

@@ -20,6 +20,19 @@ class DocumentListResponse(BaseModel):
     items: list[Document]
 
 
+class ParseJobInfo(BaseModel):
+    id: UUID
+    status: str
+    error_message: Optional[str] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+
+
+class DocumentDetail(BaseModel):
+    document: Document
+    parse_job: Optional[ParseJobInfo] = None
+
+
 class UploadResponseItem(BaseModel):
     document: Document
     file_id: str

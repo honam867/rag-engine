@@ -121,6 +121,28 @@ Nếu tất cả các bước đều hiện output (OK/Found) mà không có l�
 
 ---
 
+## 🧵 Worker Phase 2 – Document AI Parser
+
+Phase 2 sử dụng một **worker riêng** để xử lý `parse_jobs` (OCR bằng Google Cloud Document AI) ở background.
+
+- Chạy worker parse (từ cùng project, cùng `.env`):
+
+```bash
+poetry run python -m server.app.workers.parse_worker
+```
+
+Worker sẽ:
+- Poll bảng `parse_jobs` với `status='queued'`.
+- Tải file gốc từ Cloudflare R2.
+- Gọi Document AI (OCR) và lưu:
+  - `documents.docai_full_text`
+  - JSON raw Document AI lên R2 (`docai-raw/{document_id}.json`) và key vào `documents.docai_raw_r2_key`.
+- Cập nhật trạng thái `parse_jobs` (`running/success/failed`) và `documents.status` (`parsed`/`error`).
+
+Bạn nên chạy worker này song song với server (ví dụ 2 terminal, 2 service, hoặc 2 container khi deploy).
+
+---
+
 ## 📂 Cấu trúc thư mục chính
 
 *   `server/app/`: Mã nguồn chính của ứng dụng.

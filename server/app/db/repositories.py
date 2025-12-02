@@ -5,6 +5,16 @@ from typing import Any, Mapping, Sequence
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from server.app.core.constants import (
+    DOCUMENT_STATUS_ERROR,
+    DOCUMENT_STATUS_PARSED,
+    DOCUMENT_STATUS_PENDING,
+    PARSE_JOB_STATUS_FAILED,
+    PARSE_JOB_STATUS_QUEUED,
+    PARSE_JOB_STATUS_RUNNING,
+    PARSE_JOB_STATUS_SUCCESS,
+    PARSER_TYPE_GCP_DOCAI,
+)
 from server.app.db import models
 from server.app.utils.ids import new_uuid
 
@@ -57,7 +67,7 @@ async def create_document(session: AsyncSession, workspace_id: str, title: str, 
             workspace_id=workspace_id,
             title=title,
             source_type=source_type,
-            status="pending",
+            status=DOCUMENT_STATUS_PENDING,
         )
         .returning(models.documents)
     )
@@ -124,8 +134,8 @@ async def create_parse_job(session: AsyncSession, document_id: str) -> Mapping[s
         .values(
             id=job_id,
             document_id=document_id,
-            status="queued",
-            parser_type="gcp_docai",
+            status=PARSE_JOB_STATUS_QUEUED,
+            parser_type=PARSER_TYPE_GCP_DOCAI,
         )
         .returning(models.parse_jobs)
     )
@@ -133,6 +143,95 @@ async def create_parse_job(session: AsyncSession, document_id: str) -> Mapping[s
     await session.commit()
     row = result.fetchone()
     return _row_to_mapping(row)
+
+
+async def get_parse_job(session: AsyncSession, job_id: str) -> Mapping[str, Any] | None:
+    stmt = sa.select(models.parse_jobs).where(models.parse_jobs.c.id == job_id)
+    result = await session.execute(stmt)
+    row = result.fetchone()
+    return _row_to_mapping(row) if row else None
+
+
+async def fetch_queued_parse_jobs(session: AsyncSession, batch_size: int) -> Sequence[Mapping[str, Any]]:
+    stmt = (
+        sa.select(models.parse_jobs)
+        .where(models.parse_jobs.c.status == PARSE_JOB_STATUS_QUEUED)
+        .order_by(models.parse_jobs.c.id.asc())
+        .limit(batch_size)
+    )
+    result = await session.execute(stmt)
+    return [r._mapping for r in result.fetchall()]
+
+
+async def get_latest_parse_job_for_document(session: AsyncSession, document_id: str) -> Mapping[str, Any] | None:
+    stmt = sa.select(models.parse_jobs).where(models.parse_jobs.c.document_id == document_id).limit(1)
+    result = await session.execute(stmt)
+    row = result.fetchone()
+    return _row_to_mapping(row) if row else None
+
+
+async def mark_parse_job_running(session: AsyncSession, job_id: str) -> None:
+    stmt = (
+        sa.update(models.parse_jobs)
+        .where(models.parse_jobs.c.id == job_id)
+        .values(status=PARSE_JOB_STATUS_RUNNING, started_at=sa.func.now())
+    )
+    await session.execute(stmt)
+    await session.commit()
+
+
+async def mark_parse_job_success(session: AsyncSession, job_id: str) -> None:
+    stmt = (
+        sa.update(models.parse_jobs)
+        .where(models.parse_jobs.c.id == job_id)
+        .values(status=PARSE_JOB_STATUS_SUCCESS, finished_at=sa.func.now(), error_message=None)
+    )
+    await session.execute(stmt)
+    await session.commit()
+
+
+async def mark_parse_job_failed(session: AsyncSession, job_id: str, error_message: str) -> None:
+    stmt = (
+        sa.update(models.parse_jobs)
+        .where(models.parse_jobs.c.id == job_id)
+        .values(
+            status=PARSE_JOB_STATUS_FAILED,
+            finished_at=sa.func.now(),
+            error_message=error_message[:1000],
+        )
+    )
+    await session.execute(stmt)
+    await session.commit()
+
+
+async def update_document_parsed_success(
+    session: AsyncSession, document_id: str, full_text: str, raw_r2_key: str
+) -> None:
+    stmt = (
+        sa.update(models.documents)
+        .where(models.documents.c.id == document_id)
+        .values(
+            docai_full_text=full_text,
+            docai_raw_r2_key=raw_r2_key,
+            status=DOCUMENT_STATUS_PARSED,
+            updated_at=sa.func.now(),
+        )
+    )
+    await session.execute(stmt)
+    await session.commit()
+
+
+async def update_document_parse_error(session: AsyncSession, document_id: str) -> None:
+    stmt = (
+        sa.update(models.documents)
+        .where(models.documents.c.id == document_id)
+        .values(
+            status=DOCUMENT_STATUS_ERROR,
+            updated_at=sa.func.now(),
+        )
+    )
+    await session.execute(stmt)
+    await session.commit()
 
 
 # Conversations
