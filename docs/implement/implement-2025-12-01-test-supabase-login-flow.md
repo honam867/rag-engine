@@ -20,8 +20,8 @@
 
 ```bash
 poetry run python scripts/test_supabase_login.py \
-  --email honam867@gmail.com \
-  --password 'Nam_heo1509'
+  --email example@gmail.com \
+  --password 'Password'
 ```
 
 - The script reads Supabase and API URLs from:
