@@ -1,6 +1,8 @@
 from typing import Optional
 from dataclasses import dataclass
 
+from datetime import datetime, timezone
+
 import jwt
 from fastapi import HTTPException, Request, status
 
@@ -16,9 +18,24 @@ class CurrentUser:
 def decode_token(token: str) -> CurrentUser:
     settings = get_settings()
     try:
-        payload = jwt.decode(token, settings.auth.jwt_secret, algorithms=["HS256"], options={"verify_aud": False, "leeway": 60})
+        # We disable iat verification explicitly to avoid hard failures when
+        # the backend clock drifts slightly behind Supabase. Expiry is still
+        # enforced manually below with a small leeway.
+        payload = jwt.decode(
+            token,
+            settings.auth.jwt_secret,
+            algorithms=["HS256"],
+            options={"verify_aud": False, "verify_iat": False},
+        )
     except jwt.PyJWTError as exc:  # type: ignore[attr-defined]
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid token: {str(exc)}") from exc
+
+    exp = payload.get("exp")
+    if exp is not None:
+        now_ts = datetime.now(timezone.utc).timestamp()
+        # Allow small skew between Supabase and backend clocks.
+        if now_ts > float(exp) + 60:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired")
 
     user_id = payload.get("sub")
     email = payload.get("email")

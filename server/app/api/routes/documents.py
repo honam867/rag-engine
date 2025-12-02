@@ -7,7 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from server.app.core.security import CurrentUser, get_current_user
 from server.app.db import repositories as repo
 from server.app.db.session import get_db_session
-from server.app.schemas.documents import Document, DocumentListResponse, UploadResponse, UploadResponseItem
+from server.app.schemas.documents import (
+    Document,
+    DocumentDetail,
+    DocumentListResponse,
+    ParseJobInfo,
+    UploadResponse,
+    UploadResponseItem,
+)
 from server.app.services import storage_r2
 from server.app.utils.ids import new_uuid
 
@@ -77,3 +84,24 @@ async def list_documents(
     await _ensure_workspace(session, workspace_id, current_user.id)
     rows = await repo.list_documents(session, workspace_id=workspace_id)
     return DocumentListResponse(items=[_to_document(r) for r in rows])
+
+
+@router.get("/{document_id}", response_model=DocumentDetail)
+async def get_document_detail(
+    workspace_id: str,
+    document_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    await _ensure_workspace(session, workspace_id, current_user.id)
+    doc_row = await repo.get_document(session, document_id=document_id, workspace_id=workspace_id)
+    if not doc_row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    # Get latest parse_job for this document if any.
+    parse_job_row = await repo.get_latest_parse_job_for_document(session, document_id=document_id)
+    parse_job: ParseJobInfo | None = None
+    if parse_job_row:
+        parse_job = ParseJobInfo.model_validate(parse_job_row)
+
+    return DocumentDetail(document=_to_document(doc_row), parse_job=parse_job)
