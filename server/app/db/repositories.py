@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.app.core.constants import (
     DOCUMENT_STATUS_ERROR,
+    DOCUMENT_STATUS_INGESTED,
     DOCUMENT_STATUS_PARSED,
     DOCUMENT_STATUS_PENDING,
     PARSE_JOB_STATUS_FAILED,
@@ -234,6 +235,107 @@ async def update_document_parse_error(session: AsyncSession, document_id: str) -
     await session.commit()
 
 
+# RAG documents / ingestion
+async def list_parsed_documents_without_rag(session: AsyncSession, batch_size: int) -> Sequence[Mapping[str, Any]]:
+    """Return documents with status='parsed' that have no rag_documents mapping."""
+    stmt = (
+        sa.select(models.documents)
+        .select_from(
+            models.documents.outerjoin(
+                models.rag_documents, models.documents.c.id == models.rag_documents.c.document_id
+            )
+        )
+        .where(
+            models.documents.c.status == DOCUMENT_STATUS_PARSED,
+            models.rag_documents.c.id.is_(None),
+        )
+        .order_by(models.documents.c.created_at.asc())
+        .limit(batch_size)
+    )
+    result = await session.execute(stmt)
+    return [r._mapping for r in result.fetchall()]
+
+
+async def insert_rag_document(session: AsyncSession, document_id: str, rag_doc_id: str) -> Mapping[str, Any]:
+    """Insert a mapping row into rag_documents for a newly ingested document."""
+    rag_id = new_uuid()
+    stmt = (
+        sa.insert(models.rag_documents)
+        .values(id=rag_id, document_id=document_id, rag_doc_id=rag_doc_id)
+        .returning(models.rag_documents)
+    )
+    result = await session.execute(stmt)
+    await session.commit()
+    row = result.fetchone()
+    return _row_to_mapping(row)
+
+
+async def update_document_ingested_success(session: AsyncSession, document_id: str) -> None:
+    """Mark a document as successfully ingested into RAG."""
+    stmt = (
+        sa.update(models.documents)
+        .where(models.documents.c.id == document_id)
+        .values(status=DOCUMENT_STATUS_INGESTED, updated_at=sa.func.now())
+    )
+    await session.execute(stmt)
+    await session.commit()
+
+
+async def delete_rag_document_mapping(session: AsyncSession, document_id: str) -> None:
+    """Delete rag_documents mapping rows for a given document."""
+    stmt = sa.delete(models.rag_documents).where(models.rag_documents.c.document_id == document_id)
+    await session.execute(stmt)
+    await session.commit()
+
+
+async def get_document_with_relations(
+    session: AsyncSession,
+    document_id: str,
+    workspace_id: str,
+) -> Mapping[str, Any] | None:
+    """Return a document row plus basic file metadata (if any).
+
+    This is primarily used for delete flows that need both DB and R2 keys.
+    """
+    stmt = (
+        sa.select(
+            models.documents,
+            models.files.c.r2_key.label("file_r2_key"),
+            models.files.c.id.label("file_id"),
+        )
+        .select_from(
+            models.documents.outerjoin(
+                models.files, models.documents.c.id == models.files.c.document_id
+            )
+        )
+        .where(
+            models.documents.c.id == document_id,
+            models.documents.c.workspace_id == workspace_id,
+        )
+        .limit(1)
+    )
+    result = await session.execute(stmt)
+    row = result.fetchone()
+    return _row_to_mapping(row) if row else None
+
+
+async def delete_document_cascade(session: AsyncSession, document_id: str) -> None:
+    """Delete a document and all directly-related rows (rag_documents, parse_jobs, files)."""
+    # rag_documents
+    await session.execute(
+        sa.delete(models.rag_documents).where(models.rag_documents.c.document_id == document_id)
+    )
+    # parse_jobs
+    await session.execute(
+        sa.delete(models.parse_jobs).where(models.parse_jobs.c.document_id == document_id)
+    )
+    # files
+    await session.execute(sa.delete(models.files).where(models.files.c.document_id == document_id))
+    # document
+    await session.execute(sa.delete(models.documents).where(models.documents.c.id == document_id))
+    await session.commit()
+
+
 # Conversations
 async def create_conversation(session: AsyncSession, workspace_id: str, user_id: str, title: str) -> Mapping[str, Any]:
     conversation_id = new_uuid()
@@ -305,3 +407,106 @@ async def create_message(
     await session.commit()
     row = result.fetchone()
     return _row_to_mapping(row)
+
+
+async def get_message(
+    session: AsyncSession,
+    message_id: str,
+    conversation_id: str,
+    user_id: str,
+) -> Mapping[str, Any] | None:
+    """Get a single message ensuring it belongs to the user's conversation."""
+    stmt = (
+        sa.select(models.messages)
+        .join(models.conversations, models.messages.c.conversation_id == models.conversations.c.id)
+        .where(
+            models.messages.c.id == message_id,
+            models.messages.c.conversation_id == conversation_id,
+            models.conversations.c.user_id == user_id,
+        )
+    )
+    result = await session.execute(stmt)
+    row = result.fetchone()
+    return _row_to_mapping(row) if row else None
+
+
+async def delete_message(session: AsyncSession, message_id: str) -> None:
+    """Delete a single message row."""
+    stmt = sa.delete(models.messages).where(models.messages.c.id == message_id)
+    await session.execute(stmt)
+    await session.commit()
+
+
+async def delete_conversation_cascade(session: AsyncSession, conversation_id: str) -> None:
+    """Delete a conversation and all its messages."""
+    await session.execute(
+        sa.delete(models.messages).where(models.messages.c.conversation_id == conversation_id)
+    )
+    await session.execute(
+        sa.delete(models.conversations).where(models.conversations.c.id == conversation_id)
+    )
+    await session.commit()
+
+
+async def list_workspace_files_and_docs(session: AsyncSession, workspace_id: str) -> Sequence[Mapping[str, Any]]:
+    """List R2 keys for all files and OCR JSON in a workspace."""
+    stmt = (
+        sa.select(
+            models.documents.c.id.label("document_id"),
+            models.documents.c.docai_raw_r2_key.label("docai_raw_r2_key"),
+            models.files.c.r2_key.label("file_r2_key"),
+        )
+        .select_from(
+            models.documents.outerjoin(
+                models.files, models.documents.c.id == models.files.c.document_id
+            )
+        )
+        .where(models.documents.c.workspace_id == workspace_id)
+    )
+    result = await session.execute(stmt)
+    return [r._mapping for r in result.fetchall()]
+
+
+async def delete_workspace_cascade(session: AsyncSession, workspace_id: str, user_id: str) -> None:
+    """Delete a workspace and all related rows in a single transaction."""
+    # Ensure workspace belongs to user_id to avoid accidental cross-user deletes.
+    ws = await get_workspace(session, workspace_id=workspace_id, user_id=user_id)
+    if not ws:
+        return
+
+    # messages -> conversations -> rag_documents/parse_jobs/files/documents -> workspace
+    # messages (via conversations)
+    conv_ids_subq = sa.select(models.conversations.c.id).where(
+        models.conversations.c.workspace_id == workspace_id
+    )
+    await session.execute(
+        sa.delete(models.messages).where(
+            models.messages.c.conversation_id.in_(conv_ids_subq)
+        )
+    )
+    # conversations
+    await session.execute(
+        sa.delete(models.conversations).where(models.conversations.c.workspace_id == workspace_id)
+    )
+    # rag_documents (via documents)
+    doc_ids_subq = sa.select(models.documents.c.id).where(
+        models.documents.c.workspace_id == workspace_id
+    )
+    await session.execute(
+        sa.delete(models.rag_documents).where(models.rag_documents.c.document_id.in_(doc_ids_subq))
+    )
+    # parse_jobs (via documents)
+    await session.execute(
+        sa.delete(models.parse_jobs).where(models.parse_jobs.c.document_id.in_(doc_ids_subq))
+    )
+    # files (via documents)
+    await session.execute(
+        sa.delete(models.files).where(models.files.c.document_id.in_(doc_ids_subq))
+    )
+    # documents
+    await session.execute(
+        sa.delete(models.documents).where(models.documents.c.workspace_id == workspace_id)
+    )
+    # workspace
+    await session.execute(sa.delete(models.workspaces).where(models.workspaces.c.id == workspace_id))
+    await session.commit()

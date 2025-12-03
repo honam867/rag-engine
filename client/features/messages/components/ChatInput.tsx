@@ -47,11 +47,11 @@ export function ChatInput({ conversationId }: { conversationId: string }) {
     <div className="relative">
         <form 
             onSubmit={handleSubmit} 
-            className="relative flex items-end gap-2 p-3 bg-background border rounded-xl shadow-sm ring-offset-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2"
+            className="relative flex items-end gap-2 p-2 bg-background border rounded-xl shadow-sm ring-offset-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2"
         >
             <Textarea
                 ref={textareaRef}
-                className="min-h-[24px] w-full resize-none border-0 bg-transparent p-0 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 text-base max-h-[200px]"
+                className="min-h-[48px] w-full resize-none border-0 bg-transparent p-4 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 text-base max-h-[200px] leading-relaxed pr-12"
                 rows={1}
                 value={content}
                 onChange={(e) => setContent(e.target.value)}
@@ -64,7 +64,7 @@ export function ChatInput({ conversationId }: { conversationId: string }) {
                 size="icon" 
                 disabled={!content.trim() || isPending}
                 className={cn(
-                    "h-8 w-8 shrink-0 rounded-lg transition-all", 
+                    "absolute bottom-2 right-2 h-8 w-8 shrink-0 rounded-lg transition-all", 
                     content.trim() ? "opacity-100" : "opacity-50"
                 )}
             >

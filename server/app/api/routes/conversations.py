@@ -41,3 +41,19 @@ async def list_conversations(
     await _ensure_workspace(session, workspace_id, current_user.id)
     rows = await repo.list_conversations(session, workspace_id=workspace_id, user_id=current_user.id)
     return ConversationListResponse(items=[_to_conversation(r) for r in rows])
+
+
+@router.delete("/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_conversation(
+    workspace_id: str,
+    conversation_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Delete a conversation and all its messages from a workspace."""
+    await _ensure_workspace(session, workspace_id, current_user.id)
+    conv = await repo.get_conversation(session, conversation_id=conversation_id, user_id=current_user.id)
+    if not conv or str(conv["workspace_id"]) != workspace_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+
+    await repo.delete_conversation_cascade(session=session, conversation_id=conversation_id)
