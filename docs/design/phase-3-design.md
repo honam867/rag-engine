@@ -21,7 +21,7 @@ Mục tiêu: chuyển đặc tả Phase 3 trong `../requirements/requirements-ph
 Không làm ở Phase 3:
 
 - Chưa tối ưu hóa: reranking, VLM multimodal query, tools, long‑term memory, workflow phức tạp.
-- Vector DB được chốt là **Supabase Postgres với PGVector** (sử dụng các storage class PGKVStorage/PGVectorStorage/PGDocStatusStorage trên cùng cụm Postgres với app), không dùng Neo4j ở v1.
+- Vector DB được chốt là **Supabase Postgres với PGVector** (sử dụng các storage class `PGKVStorage` / `PGVectorStorage` / `PGDocStatusStorage` trên cùng cụm Postgres với app), không dùng Neo4j ở v1. LightRAG chịu trách nhiệm tự tạo/migrate các bảng riêng của nó trong database Supabase (schema RAG), tách biệt với schema domain (`documents`, `files`, `conversations`, …).
 
 ---
 
@@ -99,7 +99,7 @@ self._rag = RAGAnything(
     embedding_func=embedding_client.embed_text,   # wrapper hàm async/sync cho embedding
     lightrag_kwargs={
         "working_dir": settings.rag_working_dir,
-        # thêm các tham số khác nếu cần (top_k, chunk sizes,...)
+        # thêm các tham số khác nếu cần (top_k, chunk sizes, workspace,...)
     },
 )
 ```
@@ -113,6 +113,51 @@ Lưu ý:
 - Phase 3 tech design không ép buộc loại LLM/embedding cụ thể (có thể là OpenAI, local, v.v.).  
 - Quan trọng là `llm_client` và `embedding_client` có interface chuẩn và được inject vào `RagEngineService`.
 
+#### 2.2.1. Chọn storage LightRAG: Supabase PGVector
+
+Trong project này, storage mặc định cho LightRAG được cố định là Supabase Postgres + PGVector:
+
+- Sử dụng các storage class:
+  - `kv_storage = "PGKVStorage"`
+  - `vector_storage = "PGVectorStorage"`
+  - `doc_status_storage = "PGDocStatusStorage"`
+- Các storage trên đọc cấu hình kết nối qua environment variables:
+  - `POSTGRES_HOST`, `POSTGRES_PORT`
+  - `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DATABASE`
+  - `POSTGRES_MAX_CONNECTIONS` (optional, mặc định 50)
+  - `POSTGRES_SSL_MODE` và các tham số SSL khác nếu cần (Supabase thường dùng `require`).
+- Khi LightRAG mở pool kết nối, nó sẽ:
+  - Gọi `CREATE EXTENSION IF NOT EXISTS vector` để đảm bảo extension `vector` tồn tại.
+  - Tự tạo/migrate các bảng `lightrag_*` cần thiết (chunks, entities, relations, doc_status, llm_cache, …).
+
+Về phía app:
+
+- `RagEngineService` sẽ truyền `lightrag_kwargs` vào `RAGAnything`/`LightRAG` để ép storage dùng `PG*` như trên (không phụ thuộc `LIGHTRAG_*` env):
+
+```python
+lightrag_kwargs = {
+    "working_dir": workspace_rag_dir,
+    "kv_storage": "PGKVStorage",
+    "vector_storage": "PGVectorStorage",
+    "doc_status_storage": "PGDocStatusStorage",
+    # ví dụ cấu hình thêm cho PGVector (ngưỡng cosine, v.v.)
+    "vector_db_storage_cls_kwargs": {
+        "cosine_better_than_threshold": 0.2,
+    },
+}
+```
+
+- Việc **tách biệt**:
+  - App domain vẫn dùng `SUPABASE_DB_URL` với SQLAlchemy / asyncpg riêng.
+  - LightRAG dùng `asyncpg` + `POSTGRES_*` env để quản lý connection pool và schema của nó; không cần Alembic.
+
+Đối với môi trường dev/POC đã từng chạy pure JSON (file‑based) trước khi bật PGVector:
+
+- Các file `kv_store_*.json`, `vdb_*.json`, `kv_store_doc_status.json` trong `rag_workspaces/{workspace_id}` được coi là dữ liệu tạm.
+- Sau khi chuyển sang PGVector:
+  - **Chỉ documents ingest mới** sẽ xuất hiện trong Supabase.
+  - Nếu muốn dùng tài liệu cũ với RAG, cần re‑ingest (đặt lại `documents.status='parsed'` & xoá `rag_documents` mapping tương ứng để worker ingest lại).
+
 ### 2.3. Isolation theo workspace
 
 Yêu cầu logic: query theo `workspace_id` chỉ dùng tài liệu trong workspace đó.
@@ -120,23 +165,29 @@ Yêu cầu logic: query theo `workspace_id` chỉ dùng tài liệu trong worksp
 LightRAG/RAG‑Anything mặc định không có khái niệm workspace, nhưng có thể điều khiển ở 2 layer:
 
 1. **Layer app (được ưu tiên)**:
-   - Bảng `rag_documents` giữ mapping `workspace_id` ↔ `document_id` ↔ `rag_doc_id`.
-   - Khi hỏi: mình chỉ hỏi chung toàn bộ knowledge base, nhưng citations trả về sẽ kèm `doc_id`, `file_path` → app có thể filter/validate rằng `rag_doc_id` thuộc workspace hiện tại.
-   - Tuy nhiên, cách này không chặn retrieval cross‑workspace bên trong RAG.
+  - Bảng `rag_documents` giữ mapping `workspace_id` ↔ `document_id` ↔ `rag_doc_id`.
+  - Khi hỏi: mình chỉ hỏi chung toàn bộ knowledge base, nhưng citations trả về sẽ kèm `doc_id`, `file_path` → app có thể filter/validate rằng `rag_doc_id` thuộc workspace hiện tại.
+  - Tuy nhiên, cách này không chặn retrieval cross‑workspace bên trong RAG.
 2. **Layer RAG storage (nâng cao, Phase sau)**:
-   - Dùng “namespace” hoặc tách storage path theo `workspace_id`, ví dụ:
-     - `working_dir = f"{BASE_RAG_DIR}/workspace_{workspace_id}"`.
-   - Khi init RAG cho một workspace, dùng directory khác nhau → mỗi workspace có LightRAG instance/storage riêng.
+  - Dùng “namespace” hoặc tách storage path theo `workspace_id`, ví dụ:
+    - `working_dir = f"{BASE_RAG_DIR}/workspace_{workspace_id}"`.
+  - Khi init RAG cho một workspace, dùng directory khác nhau → mỗi workspace có LightRAG instance/storage riêng.
 
-Trong Phase 3 v1, để đơn giản và an toàn:
+Trong Phase 3, isolation được thực hiện **kép** ở cả file system và database:
 
-- Strategy đề xuất: **tách working_dir theo workspace** (mỗi workspace 1 namespace riêng).
-  - `workspace_rag_dir = os.path.join(settings.rag_base_dir, workspace_id)`.
-  - `RagEngineService` có thể:
-    - Hoặc tạo 1 RAGAnything instance/ cache per workspace (map workspace_id → instance).
-    - Hoặc tạo on‑demand khi ingest/query lần đầu cho workspace, giữ trong memory map.
+- **File system (working_dir)**:
+  - Mỗi workspace có một thư mục riêng:  
+    `workspace_rag_dir = os.path.join(settings.rag_base_dir, workspace_id)`.
+  - Thư mục này chứa:
+    - Các file log, graph (`graph_chunk_entity_relation.graphml`), cache phụ trợ,… do LightRAG/RAG‑Anything tạo.
+    - Các file JSON cũ (nếu đã chạy bản file‑based) nhưng từ lúc chuyển sang PGVector sẽ không còn là source of truth chính.
 
-Pseudocode idea:
+- **Database (workspace column trong bảng LightRAG)**:
+  - Khi khởi tạo `LightRAG`, `RagEngineService` truyền `workspace=workspace_id` qua `lightrag_kwargs`.
+  - Các bảng `lightrag_*` trong Postgres đều có cột `workspace`; mọi query/insert đều được filter theo cột này.
+  - Không set `POSTGRES_WORKSPACE` ở env để tránh override; coi `workspace_id` của app là namespace duy nhất cho LightRAG.
+
+Pattern khởi tạo instance:
 
 ```python
 class RagEngineService:
@@ -145,16 +196,26 @@ class RagEngineService:
 
     def _get_instance(self, workspace_id: str) -> RAGAnything:
         if workspace_id not in self._instances:
-            working_dir = os.path.join(self.settings.rag_base_dir, workspace_id)
+            workspace_rag_dir = os.path.join(self.settings.rag_base_dir, workspace_id)
             self._instances[workspace_id] = RAGAnything(
                 llm_model_func=self.llm_client.call_llm,
                 embedding_func=self.embedding_client.embed_text,
-                lightrag_kwargs={"working_dir": working_dir},
+                lightrag_kwargs={
+                    "working_dir": workspace_rag_dir,
+                    "workspace": workspace_id,
+                    "kv_storage": "PGKVStorage",
+                    "vector_storage": "PGVectorStorage",
+                    "doc_status_storage": "PGDocStatusStorage",
+                    "vector_db_storage_cls_kwargs": {
+                        "cosine_better_than_threshold": 0.2,
+                    },
+                },
             )
         return self._instances[workspace_id]
 ```
 
-Sau đó, `ingest_content`/`query`/`delete_document` đều gọi `_get_instance(workspace_id)` trước khi thao tác.
+Sau đó, `ingest_content`/`query`/`delete_document` đều gọi `_get_instance(workspace_id)` trước khi thao tác;  
+và mọi dữ liệu RAG (chunks, entities, relations, doc_status, cache) đều được cô lập theo từng workspace trong Supabase.
 
 ---
 
@@ -403,7 +464,7 @@ Thiết kế Phase 3 này:
   - `services/rag_engine.py`, `services/chunker.py`, `services/jobs_ingest.py` rõ vai trò.
   - `workers/ingest_worker.py` song song với `parse_worker.py`.
   - API layer không phụ thuộc trực tiếp vào RAG‑Anything, chỉ gọi service.
-- Không khoá cứng vào một vector DB duy nhất: dùng LightRAG backend thông qua `working_dir`, có thể file/SQLite/kv; nếu sau này cần tích hợp cụ thể hơn (như Postgres hoặc vector DB riêng) có thể mở rộng bằng cách chỉnh `lightrag_kwargs`.
+- Về storage, spec chốt **Supabase Postgres + PGVector** cho production; tuy nhiên việc binding cụ thể (các tên storage, tham số `vector_db_storage_cls_kwargs`, …) vẫn đi qua `lightrag_kwargs`, nên về mặt kỹ thuật có thể chuyển sang backend khác (Milvus, Qdrant, …) trong tương lai mà không đổi API app – nếu requirements thay đổi.
 
 Sau Phase 3 tech design, ta đã có:
 

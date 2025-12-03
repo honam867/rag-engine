@@ -33,7 +33,9 @@ Phase 3 tập trung vào luồng RAG, không đi sâu vào tối ưu (caching, r
   - **Embedding model**: ví dụ OpenAI, local model hoặc model khác (chi tiết chọn model nằm ở tech design, Phase 3 chỉ yêu cầu “có model hoạt động được”).
   - **LLM model**: phục vụ bước answer generation trong RAG‑Anything.
   - **Storage nội bộ cho RAG‑Anything**:
-    - LightRAG sẽ dùng một backend (file/SQLite/vector DB, …) – loại backend cụ thể được quyết ở tech design.
+    - Về mặt yêu cầu, knowledge store phải nằm trên **Supabase Postgres với PGVector** để dễ quản lý, backup, monitor cùng cụm DB hiện tại.
+    - Implementation sử dụng LightRAG storage classes `PGKVStorage` / `PGVectorStorage` / `PGDocStatusStorage` trên chính database Supabase (schema riêng do LightRAG tự tạo & migrate, không đi qua Alembic).
+    - Đối với các môi trường dev cũ đã từng chạy bản file‑based (JSON local), chỉ **tài liệu ingest mới** sau khi bật PGVector mới xuất hiện trong Supabase; các tài liệu cũ nếu cần dùng lại RAG sẽ phải được re‑ingest (không thực hiện migrate tự động).
   - Cách “namespacing” theo workspace:
     - Yêu cầu logic: khi query theo `workspace_id`, chỉ lấy context từ tài liệu thuộc workspace đó.
     - Cách thực hiện (một LightRAG instance hay nhiều instance, metadata filter, …) sẽ được quyết ở tầng tech design dựa trên khả năng của LightRAG.

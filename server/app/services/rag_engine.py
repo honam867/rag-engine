@@ -26,6 +26,66 @@ class RagEngineService:
         # Actual RAG-Anything / LightRAG instances are initialized lazily per workspace.
         self._instances: dict[str, Any] = {}
 
+    def _ensure_postgres_env_from_supabase(self) -> None:
+        """Derive POSTGRES_* env vars for LightRAG from SUPABASE_DB_URL if needed.
+
+        LightRAG's PGVector backends read connection info from POSTGRES_* variables.
+        To avoid duplicating config, we parse SUPABASE_DB_URL once and populate
+        POSTGRES_* only when they are not already set.
+        """
+        # If POSTGRES_DATABASE is already set, assume the rest are configured.
+        if os.getenv("POSTGRES_DATABASE"):
+            return
+
+        try:
+            from sqlalchemy.engine.url import make_url
+        except ImportError:
+            logger.warning(
+                "sqlalchemy is not available; cannot derive POSTGRES_* from SUPABASE_DB_URL."
+            )
+            return
+
+        supabase_url = get_settings().database.db_url
+        if not supabase_url:
+            logger.warning(
+                "SUPABASE_DB_URL is empty; cannot derive POSTGRES_* for LightRAG."
+            )
+            return
+
+        try:
+            url = make_url(supabase_url)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Failed to parse SUPABASE_DB_URL for LightRAG Postgres config: %s", exc
+            )
+            return
+
+        host = url.host or "localhost"
+        port = url.port or 5432
+        username = url.username or ""
+        password = url.password or ""
+        database = url.database or "postgres"
+
+        os.environ.setdefault("POSTGRES_HOST", host)
+        os.environ.setdefault("POSTGRES_PORT", str(port))
+        os.environ.setdefault("POSTGRES_USER", username)
+        os.environ.setdefault("POSTGRES_PASSWORD", password)
+        os.environ.setdefault("POSTGRES_DATABASE", database)
+        os.environ.setdefault("POSTGRES_MAX_CONNECTIONS", "10")
+        # Disable asyncpg statement cache when going through PgBouncer transaction pooler,
+        # as recommended by asyncpg docs and error hints.
+        os.environ.setdefault("POSTGRES_STATEMENT_CACHE_SIZE", "0")
+        # Ensure EMBEDDING_DIM matches the OpenAI embedding model we use (text-embedding-3-large → 3072 dims)
+        # so that PGVector tables are created with the correct vector dimension.
+        os.environ.setdefault("EMBEDDING_DIM", "3072")
+
+        logger.info(
+            "Configured LightRAG POSTGRES_* from SUPABASE_DB_URL (host=%s, db=%s); "
+            "statement_cache_size=0, SSL mode using asyncpg defaults",
+            host,
+            database,
+        )
+
     def _get_rag_instance(self, workspace_id: str) -> Any:
         """Return (and lazily create) a RAGAnything instance for a workspace.
 
@@ -34,6 +94,9 @@ class RagEngineService:
         """
         if workspace_id in self._instances:
             return self._instances[workspace_id]
+
+        # Ensure LightRAG PGVector storage can connect to the same Supabase DB.
+        self._ensure_postgres_env_from_supabase()
 
         try:
             from raganything import RAGAnything, RAGAnythingConfig
@@ -95,14 +158,31 @@ class RagEngineService:
             ),
         )
 
+        # Configure LightRAG to use Supabase Postgres + PGVector as storage backend.
+        # Workspace isolation is enforced via the LightRAG workspace field, which
+        # maps to a "workspace" column in the lightrag_* tables.
+        lightrag_kwargs: Dict[str, Any] = {
+            "working_dir": workspace_dir,
+            "workspace": workspace_id,
+            "kv_storage": "PGKVStorage",
+            "vector_storage": "PGVectorStorage",
+            "doc_status_storage": "PGDocStatusStorage",
+            "vector_db_storage_cls_kwargs": {
+                # Align with LightRAG default cosine threshold (0.2) unless
+                # overridden later; this can be tuned if needed.
+                "cosine_better_than_threshold": 0.2,
+            },
+        }
+
         rag = RAGAnything(
             config=config,
             llm_model_func=llm_model_func,
             embedding_func=embedding_func,
+            lightrag_kwargs=lightrag_kwargs,
         )
         self._instances[workspace_id] = rag
         logger.info(
-            "Initialized RAG-Anything instance for workspace %s at %s",
+            "Initialized RAG-Anything instance for workspace %s at %s using PGVector storage",
             workspace_id,
             workspace_dir,
         )

@@ -32,3 +32,4 @@ build/
 Thumbs.db
 gen-lang-client-0216585818-4e9275d968e6.json
 rag_workspaces
+logs
