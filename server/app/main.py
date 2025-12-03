@@ -1,12 +1,17 @@
 from fastapi import FastAPI
 import sqlalchemy as sa
 from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
 
 from server.app.api.routes import conversations, documents, me, messages, workspaces
 from server.app.core.logging import get_logger, setup_logging
 from server.app.db.session import engine
 from server.app.schemas.common import HealthResponse
 from server.app.services.storage_r2 import check_r2_config_ready
+
+# Load environment variables from .env so that plain os.getenv() calls
+# (e.g. OPENAI_API_KEY) see the same config as pydantic Settings.
+load_dotenv(".env")
 
 setup_logging()
 logger = get_logger(__name__)

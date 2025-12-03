@@ -26,7 +26,7 @@ export function AppShell({ children, userEmail, onSignOut }: AppShellProps) {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   return (
-    <div className="flex min-h-screen bg-background overflow-hidden">
+    <div className="flex h-screen bg-background overflow-hidden">
       {/* Mobile Header */}
       <div className="lg:hidden flex items-center justify-between p-4 border-b bg-background sticky top-0 z-20">
         <span className="font-semibold">RAG Engine</span>

@@ -15,6 +15,7 @@ from server.app.schemas.documents import (
     UploadResponse,
     UploadResponseItem,
 )
+from server.app.services.rag_engine import RagEngineService
 from server.app.services import storage_r2
 from server.app.utils.ids import new_uuid
 
@@ -105,3 +106,46 @@ async def get_document_detail(
         parse_job = ParseJobInfo.model_validate(parse_job_row)
 
     return DocumentDetail(document=_to_document(doc_row), parse_job=parse_job)
+
+
+@router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_document(
+    workspace_id: str,
+    document_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Delete a document from a workspace and clean up related resources."""
+    await _ensure_workspace(session, workspace_id, current_user.id)
+
+    # Load document + basic file metadata so we can clean up R2 objects.
+    doc_with_rel = await repo.get_document_with_relations(
+        session=session, document_id=document_id, workspace_id=workspace_id
+    )
+    if not doc_with_rel:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    # Extract R2 keys before deleting DB rows.
+    file_r2_key = doc_with_rel.get("file_r2_key")
+    docai_raw_r2_key = doc_with_rel.get("docai_raw_r2_key")
+
+    # Delete DB rows in a cascade fashion (rag_documents, parse_jobs, files, document).
+    await repo.delete_document_cascade(session=session, document_id=document_id)
+
+    # Best-effort call to RAG engine delete (currently a logical no-op).
+    rag_engine = RagEngineService()
+    await rag_engine.delete_document(workspace_id=str(workspace_id), rag_doc_id=str(document_id))
+
+    # Best-effort cleanup of blobs on R2. Failures here should not break the API.
+    if file_r2_key:
+        try:
+            await storage_r2.delete_object(file_r2_key)
+        except Exception:  # noqa: BLE001
+            # Log inside storage_r2 via its own logger / wrapper if needed.
+            pass
+
+    if docai_raw_r2_key:
+        try:
+            await storage_r2.delete_object(docai_raw_r2_key)
+        except Exception:  # noqa: BLE001
+            pass

@@ -106,3 +106,20 @@ def _download_json_sync(key: str) -> dict:
 async def download_json(key: str) -> dict:
     """Async wrapper for downloading and parsing JSON from R2."""
     return await run_in_threadpool(_download_json_sync, key)
+
+
+def _delete_object_sync(key: str) -> None:
+    """Synchronous delete helper to be run in a thread."""
+    client, bucket = _get_client_and_bucket()
+    if client is None or bucket is None:
+        raise RuntimeError("Cloudflare R2 configuration missing. Cannot delete object.")
+
+    try:
+        client.delete_object(Bucket=bucket, Key=key)
+    except (BotoCoreError, ClientError) as exc:  # pragma: no cover - thin wrapper
+        raise RuntimeError(f"Failed to delete object from R2: {exc}") from exc
+
+
+async def delete_object(key: str) -> None:
+    """Async wrapper for deleting an object from R2."""
+    await run_in_threadpool(_delete_object_sync, key)

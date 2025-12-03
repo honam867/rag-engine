@@ -25,7 +25,7 @@ export function WorkspaceSidebar() {
 
   if (isLoading) {
     return (
-      <div className="flex h-full w-[250px] flex-col border-r bg-muted/10 p-4">
+      <div className="flex h-full w-full flex-col bg-muted/10 p-4">
         <div className="flex items-center gap-2 mb-4">
           <div className="h-6 w-6 rounded bg-muted animate-pulse" />
           <div className="h-4 w-24 rounded bg-muted animate-pulse" />
@@ -40,7 +40,7 @@ export function WorkspaceSidebar() {
   }
 
   return (
-    <div className="flex h-screen w-[260px] flex-col border-r bg-muted/10">
+    <div className="flex h-full w-full flex-col bg-muted/10">
       {/* Header / New Workspace */}
       <div className="flex items-center justify-between p-4 border-b">
         <h2 className="text-sm font-semibold tracking-tight">Workspaces</h2>

@@ -143,6 +143,30 @@ Bạn nên chạy worker này song song với server (ví dụ 2 terminal, 2 ser
 
 ---
 
+## 🧵 Worker Phase 3 – RAG Ingestion (RAG-Anything)
+
+Phase 3 bổ sung một **ingest worker** để:
+- Tìm các `documents` đã OCR xong (`status='parsed'`) nhưng chưa được ingest.
+- Chunk text (`docai_full_text`) thành `content_list`.
+- Gọi RAG-Anything để ingest vào knowledge store theo từng workspace.
+- Lưu mapping vào bảng `rag_documents` và cập nhật `documents.status='ingested'`.
+
+- Chạy worker ingest:
+
+```bash
+poetry run python -m server.app.workers.ingest_worker
+```
+
+Worker này có thể chạy song song với `parse_worker`. Luồng đầy đủ:
+
+```text
+upload file -> parse_worker (Document AI OCR) -> documents.status='parsed'
+           -> ingest_worker (RAG-Anything ingest) -> documents.status='ingested'
+           -> chat API sử dụng RAG để trả lời theo workspace
+```
+
+---
+
 ## 📂 Cấu trúc thư mục chính
 
 *   `server/app/`: Mã nguồn chính của ứng dụng.
