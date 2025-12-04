@@ -93,24 +93,39 @@ poetry run python scripts/seed_users.py
 
 ---
 
-## 🚀 Khởi chạy Server
+## 🚀 Khởi chạy Dự án (Development)
 
-Chạy server development với tính năng hot-reload:
+Để khởi chạy toàn bộ dự án (Backend API, Parse Worker, Ingest Worker và Frontend Client) trong môi trường phát triển, bạn sẽ cần 2 terminal.
+
+### 1. Khởi chạy Backend (API Server và Workers)
+
+Từ thư mục gốc của dự án (`rag-engine/`), chạy lệnh sau để khởi động đồng thời Backend API, Parse Worker và Ingest Worker:
 
 ```bash
-poetry run uvicorn server.app.main:app --reload --host 127.0.0.1 --port 8000
+poetry run honcho start
 ```
+*   Server API sẽ chạy tại: `http://127.0.0.1:8000`
+*   API Documentation (Swagger UI): `http://127.0.0.1:8000/docs`
+*   `honcho` sẽ gộp log của tất cả các tiến trình vào một cửa sổ. Bạn có thể nhấn `Ctrl+C` để dừng tất cả chúng cùng lúc.
 
-Server sẽ hoạt động tại: `http://127.0.0.1:8000`
-API Documentation (Swagger UI): `http://127.0.0.1:8000/docs`
+### 2. Khởi chạy Frontend (Client)
+
+Mở một terminal **mới**, di chuyển vào thư mục `client/` và khởi động development server của Next.js:
+
+```bash
+cd client
+npm install # Chạy lần đầu hoặc khi có thay đổi dependencies
+npm run dev
+```
+Client (frontend) sẽ chạy tại: `http://localhost:3000` (hoặc cổng khác nếu đã được cấu hình).
 
 ---
 
 ## 🧪 Kiểm thử (Testing)
 
-Dự án có sẵn script kiểm thử End-to-End (E2E) để verify toàn bộ luồng hoạt động (Auth -> Workspace -> Upload -> Chat).
+Sau khi đã khởi chạy **Backend** (`poetry run honcho start`) và **Frontend** (`npm run dev`) thành công, bạn có thể chạy script kiểm thử End-to-End (E2E) để verify toàn bộ luồng hoạt động (Auth -> Workspace -> Upload -> Chat).
 
-Sau khi start server, mở một terminal khác và chạy:
+Mở một terminal **mới** khác và chạy:
 
 ```bash
 # Thay <USER_ID> bằng ID bạn lấy được ở bước Seed Data
@@ -118,52 +133,6 @@ poetry run python scripts/e2e_phase1.py --base-url http://127.0.0.1:8000 --user-
 ```
 
 Nếu tất cả các bước đều hiện output (OK/Found) mà không có lỗi đỏ, hệ thống đã hoạt động hoàn hảo!
-
----
-
-## 🧵 Worker Phase 2 – Document AI Parser
-
-Phase 2 sử dụng một **worker riêng** để xử lý `parse_jobs` (OCR bằng Google Cloud Document AI) ở background.
-
-- Chạy worker parse (từ cùng project, cùng `.env`):
-
-```bash
-poetry run python -m server.app.workers.parse_worker
-```
-
-Worker sẽ:
-- Poll bảng `parse_jobs` với `status='queued'`.
-- Tải file gốc từ Cloudflare R2.
-- Gọi Document AI (OCR) và lưu:
-  - `documents.docai_full_text`
-  - JSON raw Document AI lên R2 (`docai-raw/{document_id}.json`) và key vào `documents.docai_raw_r2_key`.
-- Cập nhật trạng thái `parse_jobs` (`running/success/failed`) và `documents.status` (`parsed`/`error`).
-
-Bạn nên chạy worker này song song với server (ví dụ 2 terminal, 2 service, hoặc 2 container khi deploy).
-
----
-
-## 🧵 Worker Phase 3 – RAG Ingestion (RAG-Anything)
-
-Phase 3 bổ sung một **ingest worker** để:
-- Tìm các `documents` đã OCR xong (`status='parsed'`) nhưng chưa được ingest.
-- Chunk text (`docai_full_text`) thành `content_list`.
-- Gọi RAG-Anything để ingest vào knowledge store theo từng workspace.
-- Lưu mapping vào bảng `rag_documents` và cập nhật `documents.status='ingested'`.
-
-- Chạy worker ingest:
-
-```bash
-poetry run python -m server.app.workers.ingest_worker
-```
-
-Worker này có thể chạy song song với `parse_worker`. Luồng đầy đủ:
-
-```text
-upload file -> parse_worker (Document AI OCR) -> documents.status='parsed'
-           -> ingest_worker (RAG-Anything ingest) -> documents.status='ingested'
-           -> chat API sử dụng RAG để trả lời theo workspace
-```
 
 ---
 

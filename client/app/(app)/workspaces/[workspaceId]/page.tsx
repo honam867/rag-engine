@@ -2,14 +2,13 @@
 
 import { useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { Send, Sparkles } from "lucide-react";
+import { Send, Sparkles, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
 import { useWorkspaceDocuments } from "@/features/documents/hooks/useDocuments";
 import { useCreateConversation } from "@/features/conversations/hooks/useConversations";
-import { sendMessage } from "@/features/messages/api/messages";
 import { RecentConversations } from "@/features/conversations/components/RecentConversations";
 import { DocumentSidebar } from "@/features/documents/components/DocumentSidebar";
 
@@ -21,9 +20,6 @@ export default function WorkspaceDashboardPage() {
   const [input, setInput] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // We still need to check if documents exist to enable chat, 
-  // but we might not need the full list here anymore if it's in the sidebar.
-  // However, useWorkspaceDocuments caches data so it's fine to call it again or just rely on the count if we had a lighter hook.
   const { data: documents, isLoading: isLoadingDocs } = useWorkspaceDocuments(workspaceId);
   const createConvMutation = useCreateConversation(workspaceId);
 
@@ -38,11 +34,10 @@ export default function WorkspaceDashboardPage() {
       const title = input.trim().substring(0, 50) + (input.length > 50 ? "..." : "");
       const conversation = await createConvMutation.mutateAsync({ title });
       
-      // 2. Send Message
-      await sendMessage(conversation.id, { content: input });
-      
-      // 3. Navigate
-      router.push(`/workspaces/${workspaceId}/conversations/${conversation.id}`);
+      // 2. Navigate immediately with initial prompt
+      // We encode it to safely pass via URL
+      const encodedPrompt = encodeURIComponent(input.trim());
+      router.push(`/workspaces/${workspaceId}/conversations/${conversation.id}?initialPrompt=${encodedPrompt}`);
     } catch (error) {
       console.error("Failed to start conversation:", error);
       setIsSubmitting(false);
@@ -89,7 +84,7 @@ export default function WorkspaceDashboardPage() {
                             disabled={!input.trim() || !hasDocuments || isSubmitting}
                             onClick={handleSend}
                             >
-                            <Send className="h-5 w-5" />
+                            {isSubmitting ? <Loader2 className="h-5 w-5 animate-spin" /> : <Send className="h-5 w-5" />}
                             </Button>
                         </div>
 

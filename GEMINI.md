@@ -4,7 +4,7 @@
 
 **Name:** `rag-engine`
 **Description:** A backend engine for a RAG (Retrieval-Augmented Generation) system, designed to work with Supabase, Cloudflare R2, and a custom RAG implementation ("LightRAG").
-**Phase:** Currently in Phase 1 (Skeleton & Infrastructure).
+**Phase:** Transitioning between Phase 3 and Phase 5 (Phase 4 is pending/low priority).
 
 ### Architecture
 The project follows a layered architecture (similar to Clean Architecture):
@@ -16,7 +16,7 @@ The project follows a layered architecture (similar to Clean Architecture):
 ### Key Technologies
 *   **Language:** Python 3.11+
 *   **Web Framework:** FastAPI
-*   **Database:** PostgreSQL (via Supabase), SQLAlchemy (Async), asyncpg.
+*   **Database:** PostgreSQL (via Supabase), SQLAlchemy (Async), asyncpg, Pgvector.
 *   **Migrations:** Alembic
 *   **Storage:** Cloudflare R2 (via boto3)
 *   **Authentication:** Supabase Auth (JWT)
@@ -37,7 +37,7 @@ The project follows a layered architecture (similar to Clean Architecture):
     *   `design/`: Architecture and phase-specific designs.
     *   `requirements/`: Product requirements.
     *   `implement/`: Implementation logs (Crucial for tracking progress).
-*   `client/`: Placeholder for future frontend code.
+*   `client/`: Frontend application (Next.js).
 
 ## 3. Development Workflow
 
@@ -73,11 +73,12 @@ poetry run uvicorn server.app.main:app --reload --host 127.0.0.1 --port 8000
 *   **Database:** Use SQLAlchemy Core/Async. Do NOT use ORM relationships unless strictly necessary; prefer explicit joins or repository methods.
 *   **External Services:** Always use the wrapper services in `server/app/services/` instead of calling external APIs (R2, etc.) directly.
 
-## 4. Current State (Phase 1)
-*   Basic infrastructure is set up (FastAPI, DB connection, R2 wrapper).
-*   Core entities (Workspaces, Documents, Conversations) have database tables and basic CRUD APIs.
-*   Authentication via Supabase JWT is implemented.
-*   Background workers (Parse, Ingest) are stubbed out or in early stages.
+## 4. Current State (Transitioning to Phase 5)
+*   **Phase 1 (Skeleton & Infrastructure):** Completed. Basic infrastructure, CRUD APIs, and Auth are stable.
+*   **Phase 2 (Parser Pipeline):** Completed. Document ingestion and parsing logic implemented.
+*   **Phase 3 (RAG Engine):** Completed. Pgvector integration with Supabase, RAG engine logic (LightRAG) integrated.
+*   **Phase 4:** Pending (Low Priority).
+*   **Phase 5:** In Progress. Transitioning to advanced features and optimizations.
 
 ## 5. Important Files
 *   `server/app/main.py`: Entry point.

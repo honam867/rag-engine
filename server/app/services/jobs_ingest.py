@@ -12,8 +12,9 @@ from typing import Callable
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from server.app.core.constants import DOCUMENT_STATUS_PARSED
+from server.app.core.constants import DOCUMENT_STATUS_INGESTED, DOCUMENT_STATUS_PARSED
 from server.app.core.logging import get_logger
+from server.app.core.realtime import send_event_to_user
 from server.app.db import models, repositories as repo
 from server.app.services.chunker import ChunkerService
 from server.app.services.rag_engine import RagEngineService
@@ -94,6 +95,22 @@ class IngestJobService:
                     "chunks": len(content_list),
                 },
             )
+            # Realtime notification: document is now ingested/ready.
+            try:
+                async with self._session_factory() as session:  # type: ignore[call-arg]
+                    owner_id = await repo.get_workspace_owner_id(session, workspace_id=workspace_id)
+                if owner_id:
+                    await send_event_to_user(
+                        owner_id,
+                        "document.status_updated",
+                        {
+                            "workspace_id": workspace_id,
+                            "document_id": document_id,
+                            "status": DOCUMENT_STATUS_INGESTED,
+                        },
+                    )
+            except Exception:  # noqa: BLE001
+                pass
         except Exception as exc:  # noqa: BLE001
             # Keep document in 'parsed' state so ingestion can be retried later.
             self._logger.error(

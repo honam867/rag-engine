@@ -25,6 +25,7 @@ raganything = "^1.2.8"
 ruff = "^0.4.0"
 black = "^24.4.0"
 httpx = "^0.27.0"
+honcho = "^2.0.0"
 
 [build-system]
 requires = ["poetry-core>=1.8.0"]

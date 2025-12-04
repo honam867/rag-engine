@@ -61,6 +61,7 @@ parse_jobs = sa.Table(
     sa.Column("status", sa.Text, nullable=False),
     sa.Column("parser_type", sa.Text, nullable=False, server_default=sa.text("'gcp_docai'")),
     sa.Column("error_message", sa.Text),
+    sa.Column("retry_count", sa.Integer, nullable=False, server_default=sa.text("0")),
     sa.Column("started_at", sa.DateTime(timezone=True)),
     sa.Column("finished_at", sa.DateTime(timezone=True)),
 )
@@ -98,6 +99,7 @@ messages = sa.Table(
     sa.Column("conversation_id", UUID(as_uuid=True), sa.ForeignKey("public.conversations.id"), nullable=False),
     sa.Column("role", sa.Text, nullable=False),
     sa.Column("content", sa.Text, nullable=False),
+    sa.Column("status", sa.Text, nullable=False, server_default=sa.text("'done'")),
     sa.Column("metadata", sa.JSON),
     sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
 )

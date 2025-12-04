@@ -58,6 +58,16 @@ async def get_workspace(session: AsyncSession, workspace_id: str, user_id: str) 
     return _row_to_mapping(row) if row else None
 
 
+async def get_workspace_owner_id(session: AsyncSession, workspace_id: str) -> str | None:
+    """Return user_id (owner) for a given workspace_id, or None if not found."""
+    stmt = sa.select(models.workspaces.c.user_id).where(models.workspaces.c.id == workspace_id)
+    result = await session.execute(stmt)
+    row = result.fetchone()
+    if not row:
+        return None
+    return str(row[0])
+
+
 # Documents / Files / Parse Jobs
 async def create_document(session: AsyncSession, workspace_id: str, title: str, source_type: str) -> Mapping[str, Any]:
     document_id = new_uuid()
@@ -203,6 +213,45 @@ async def mark_parse_job_failed(session: AsyncSession, job_id: str, error_messag
     )
     await session.execute(stmt)
     await session.commit()
+
+
+async def requeue_parse_job(session: AsyncSession, job_id: str, retry_count: int, error_message: str | None = None) -> None:
+    """Move a job back to queued state with incremented retry_count."""
+    values: dict[str, Any] = {
+        "status": PARSE_JOB_STATUS_QUEUED,
+        "retry_count": retry_count,
+        "started_at": None,
+        "finished_at": None,
+    }
+    if error_message:
+        values["error_message"] = error_message[:1000]
+    stmt = sa.update(models.parse_jobs).where(models.parse_jobs.c.id == job_id).values(**values)
+    await session.execute(stmt)
+    await session.commit()
+
+
+async def fetch_stale_running_parse_jobs(
+    session: AsyncSession,
+    older_than_seconds: int,
+) -> Sequence[Mapping[str, Any]]:
+    """Return parse_jobs stuck in running state longer than the given threshold.
+
+    Uses started_at as the reference time; jobs without started_at are ignored.
+    """
+    if older_than_seconds <= 0:
+        return []
+    # Build a Postgres expression: started_at < now() - interval '<seconds> seconds'
+    interval_expr = sa.text(f"interval '{older_than_seconds} seconds'")
+    stmt = (
+        sa.select(models.parse_jobs)
+        .where(
+            models.parse_jobs.c.status == PARSE_JOB_STATUS_RUNNING,
+            models.parse_jobs.c.started_at.is_not(None),
+            models.parse_jobs.c.started_at < sa.func.now() - interval_expr,
+        )
+    )
+    result = await session.execute(stmt)
+    return [r._mapping for r in result.fetchall()]
 
 
 async def update_document_parsed_success(
@@ -389,23 +438,68 @@ async def list_messages(session: AsyncSession, conversation_id: str, user_id: st
 
 
 async def create_message(
-    session: AsyncSession, conversation_id: str, role: str, content: str, metadata: dict | None
+    session: AsyncSession,
+    conversation_id: str,
+    role: str,
+    content: str,
+    status: str | None = None,
+    metadata: dict | None = None,
 ) -> Mapping[str, Any]:
     message_id = new_uuid()
+    values = {
+        "id": message_id,
+        "conversation_id": conversation_id,
+        "role": role,
+        "content": content,
+        "metadata": metadata,
+    }
+    if status:
+        values["status"] = status
+        
     stmt = (
         sa.insert(models.messages)
-        .values(
-            id=message_id,
-            conversation_id=conversation_id,
-            role=role,
-            content=content,
-            metadata=metadata,
-        )
+        .values(**values)
         .returning(models.messages)
     )
     result = await session.execute(stmt)
     await session.commit()
     row = result.fetchone()
+    return _row_to_mapping(row)
+
+
+async def update_message(
+    session: AsyncSession,
+    message_id: str,
+    content: str | None = None,
+    status: str | None = None,
+    metadata: dict | None = None,
+) -> Mapping[str, Any]:
+    values: dict[str, Any] = {}
+    if content is not None:
+        values["content"] = content
+    if status is not None:
+        values["status"] = status
+    if metadata is not None:
+        values["metadata"] = metadata
+
+    if not values:
+        # No updates needed, return current state
+        stmt = sa.select(models.messages).where(models.messages.c.id == message_id)
+        result = await session.execute(stmt)
+        row = result.fetchone()
+        return _row_to_mapping(row)
+
+    stmt = (
+        sa.update(models.messages)
+        .where(models.messages.c.id == message_id)
+        .values(**values)
+        .returning(models.messages)
+    )
+    result = await session.execute(stmt)
+    await session.commit()
+    row = result.fetchone()
+    if not row:
+        raise ValueError(f"Message {message_id} not found for update")
     return _row_to_mapping(row)
 
 
