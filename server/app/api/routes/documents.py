@@ -4,6 +4,8 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from server.app.core.constants import DOCUMENT_STATUS_PENDING, PARSE_JOB_STATUS_QUEUED
+from server.app.core.realtime import send_event_to_user
 from server.app.core.security import CurrentUser, get_current_user
 from server.app.db import repositories as repo
 from server.app.db.session import get_db_session
@@ -69,7 +71,40 @@ async def upload_documents(
             file_id=file_id,
         )
 
-        await repo.create_parse_job(session=session, document_id=doc_row["id"])
+        parse_job = await repo.create_parse_job(session=session, document_id=doc_row["id"])
+
+        # Best-effort realtime notifications for new document and queued parse job.
+        try:
+            await send_event_to_user(
+                current_user.id,
+                "document.created",
+                {
+                    "workspace_id": workspace_id,
+                    "document": {
+                        "id": str(doc_row["id"]),
+                        "title": doc_row["title"],
+                        "status": DOCUMENT_STATUS_PENDING,
+                        "source_type": doc_row["source_type"],
+                        "created_at": doc_row.get("created_at"),
+                    },
+                },
+            )
+            await send_event_to_user(
+                current_user.id,
+                "job.status_updated",
+                {
+                    "job_id": str(parse_job["id"]),
+                    "job_type": "parse",
+                    "workspace_id": workspace_id,
+                    "document_id": str(doc_row["id"]),
+                    "status": PARSE_JOB_STATUS_QUEUED,
+                    "retry_count": int(parse_job.get("retry_count", 0) or 0),
+                    "error_message": parse_job.get("error_message"),
+                },
+            )
+        except Exception:
+            # Realtime is best-effort; failures must not affect upload.
+            pass
 
         items.append(UploadResponseItem(document=_to_document(doc_row), file_id=str(file_row["id"])))
 

@@ -10,6 +10,7 @@ import asyncio
 
 from server.app.core.config import get_settings
 from server.app.core.logging import get_logger, setup_logging
+from server.app.db import repositories as repo
 from server.app.db.session import async_session
 from server.app.services.docai_client import DocumentAIClient
 from server.app.services.parser_pipeline import ParserPipelineService
@@ -27,6 +28,39 @@ async def run_worker_loop() -> None:
 
     idle_sleep_seconds = 5
     busy_sleep_seconds = 1
+
+    # On startup, attempt to heal stale running parse_jobs so they can be retried.
+    try:
+        async with async_session() as session:  # type: ignore[call-arg]
+            stale_threshold_seconds = 600  # 10 minutes
+            jobs = await repo.fetch_stale_running_parse_jobs(
+                session=session,
+                older_than_seconds=stale_threshold_seconds,
+            )
+            if jobs:
+                logger.info(
+                    "Found stale running parse_jobs; resetting for retry",
+                    extra={"count": len(jobs)},
+                )
+            for job in jobs:
+                job_id = str(job["id"])
+                retry_count = int(job.get("retry_count", 0) or 0)
+                max_retries = 3
+                if retry_count < max_retries:
+                    await repo.requeue_parse_job(
+                        session=session,
+                        job_id=job_id,
+                        retry_count=retry_count + 1,
+                        error_message="stale-running",
+                    )
+                else:
+                    await repo.mark_parse_job_failed(
+                        session=session,
+                        job_id=job_id,
+                        error_message="stale-running",
+                    )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Failed to heal stale parse_jobs on startup", extra={"error": str(exc)})
 
     while True:
         try:

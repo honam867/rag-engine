@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from server.app.core.constants import RAG_DEFAULT_SYSTEM_PROMPT, ROLE_AI, ROLE_USER
+from server.app.core.constants import MESSAGE_STATUS_DONE, RAG_DEFAULT_SYSTEM_PROMPT, ROLE_AI, ROLE_USER
 from server.app.core.config import get_settings
+from server.app.core.realtime import send_event_to_user
 from server.app.core.security import CurrentUser, get_current_user
 from server.app.db import repositories as repo
 from server.app.db.session import get_db_session
@@ -70,6 +71,49 @@ async def create_message(
         content=answer or "Xin lỗi, hiện tại mình không thể trả lời câu hỏi này.",
         metadata={"citations": citations} if citations else {},
     )
+
+    # 4. Push realtime events for both user and AI messages (status is implicitly "done" in v1).
+    try:
+        await send_event_to_user(
+            current_user.id,
+            "message.created",
+            {
+                "workspace_id": workspace_id,
+                "conversation_id": conversation_id,
+                "message": {
+                    "id": str(user_msg["id"]),
+                    "conversation_id": conversation_id,
+                    "workspace_id": workspace_id,
+                    "role": user_msg["role"],
+                    "content": user_msg["content"],
+                    "status": MESSAGE_STATUS_DONE,
+                    "created_at": user_msg.get("created_at"),
+                    "metadata": user_msg.get("metadata") or None,
+                },
+            },
+        )
+        await send_event_to_user(
+            current_user.id,
+            "message.created",
+            {
+                "workspace_id": workspace_id,
+                "conversation_id": conversation_id,
+                "message": {
+                    "id": str(ai_msg["id"]),
+                    "conversation_id": conversation_id,
+                    "workspace_id": workspace_id,
+                    "role": ai_msg["role"],
+                    "content": ai_msg["content"],
+                    "status": MESSAGE_STATUS_DONE,
+                    "created_at": ai_msg.get("created_at"),
+                    "metadata": ai_msg.get("metadata") or None,
+                },
+            },
+        )
+    except Exception:
+        # Realtime is best-effort; failures must not break chat.
+        pass
+
     return _to_message(ai_msg)
 
 

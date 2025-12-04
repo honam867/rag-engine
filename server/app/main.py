@@ -3,7 +3,7 @@ import sqlalchemy as sa
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
-from server.app.api.routes import conversations, documents, me, messages, workspaces
+from server.app.api.routes import conversations, documents, me, messages, realtime, workspaces
 from server.app.core.logging import get_logger, setup_logging
 from server.app.db.session import engine
 from server.app.schemas.common import HealthResponse
@@ -57,3 +57,4 @@ app.include_router(workspaces.router)
 app.include_router(documents.router)
 app.include_router(conversations.router)
 app.include_router(messages.router)
+app.include_router(realtime.router)

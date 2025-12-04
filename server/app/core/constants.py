@@ -8,6 +8,12 @@ changes only need to happen in one place.
 ROLE_USER = "user"
 ROLE_AI = "ai"
 
+# Message statuses (for AI messages, Phase 5)
+MESSAGE_STATUS_PENDING = "pending"
+MESSAGE_STATUS_RUNNING = "running"
+MESSAGE_STATUS_DONE = "done"
+MESSAGE_STATUS_ERROR = "error"
+
 # Document statuses
 DOCUMENT_STATUS_PENDING = "pending"
 DOCUMENT_STATUS_PARSED = "parsed"

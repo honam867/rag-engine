@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import jwt
-from fastapi import HTTPException, Request, status
+from fastapi import HTTPException, Request, WebSocket, status
 
 from .config import get_settings
 
@@ -49,4 +49,23 @@ def get_current_user(request: Request) -> CurrentUser:
     if not auth_header or not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing Authorization header")
     token = auth_header.split(" ", 1)[1]
+    return decode_token(token)
+
+
+def get_current_user_ws(websocket: WebSocket) -> CurrentUser:
+    """Decode Supabase JWT for WebSocket connections.
+
+    The token can be provided via query parameter `token` or via
+    `Authorization: Bearer <token>` header.
+    """
+    token: Optional[str] = None
+    query_token = websocket.query_params.get("token")
+    if query_token:
+        token = query_token
+    else:
+        auth_header = websocket.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ", 1)[1]
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token for WebSocket connection")
     return decode_token(token)

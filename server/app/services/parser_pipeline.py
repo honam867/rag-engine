@@ -17,7 +17,16 @@ from typing import Callable
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from server.app.core.constants import (
+    DOCUMENT_STATUS_ERROR,
+    DOCUMENT_STATUS_PARSED,
+    PARSE_JOB_STATUS_FAILED,
+    PARSE_JOB_STATUS_QUEUED,
+    PARSE_JOB_STATUS_RUNNING,
+    PARSE_JOB_STATUS_SUCCESS,
+)
 from server.app.core.logging import get_logger
+from server.app.core.realtime import send_event_to_user
 from server.app.db import models, repositories as repo
 from server.app.services import storage_r2
 from server.app.services.docai_client import DocumentAIClient
@@ -48,10 +57,45 @@ class ParserPipelineService:
                 return
 
             document_id = str(job["document_id"])
+            retry_count = int(job.get("retry_count", 0) or 0)
+
+            # Load workspace + owner for realtime notifications.
+            doc_stmt = (
+                sa.select(models.documents.c.workspace_id)
+                .where(models.documents.c.id == document_id)
+                .limit(1)
+            )
+            doc_result = await session.execute(doc_stmt)
+            doc_row = doc_result.fetchone()
+            if not doc_row:
+                self._logger.warning(
+                    "Document not found for parse_job", extra={"job_id": job_id, "document_id": document_id}
+                )
+                return
+            workspace_id = str(doc_row[0])
+            user_id = await repo.get_workspace_owner_id(session, workspace_id=workspace_id)
 
         # Mark job running in a separate transaction.
         async with self._session_factory() as session:  # type: ignore[call-arg]
             await repo.mark_parse_job_running(session, job_id=job_id)
+        if user_id:
+            try:
+                await send_event_to_user(
+                    user_id,
+                    "job.status_updated",
+                    {
+                        "job_id": job_id,
+                        "job_type": "parse",
+                        "workspace_id": workspace_id,
+                        "document_id": document_id,
+                        "status": PARSE_JOB_STATUS_RUNNING,
+                        "retry_count": retry_count,
+                        "error_message": job.get("error_message"),
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                # Realtime is best-effort; do not break parse pipeline.
+                pass
 
         try:
             # Load file metadata for the document.
@@ -85,14 +129,90 @@ class ParserPipelineService:
                 )
                 await repo.mark_parse_job_success(session=session, job_id=job_id)
             self._logger.info("parse_job processed successfully", extra={"job_id": job_id, "document_id": document_id})
+
+            # Realtime notifications for success.
+            if user_id:
+                try:
+                    await send_event_to_user(
+                        user_id,
+                        "document.status_updated",
+                        {
+                            "workspace_id": workspace_id,
+                            "document_id": document_id,
+                            "status": DOCUMENT_STATUS_PARSED,
+                        },
+                    )
+                    await send_event_to_user(
+                        user_id,
+                        "job.status_updated",
+                        {
+                            "job_id": job_id,
+                            "job_type": "parse",
+                            "workspace_id": workspace_id,
+                            "document_id": document_id,
+                            "status": PARSE_JOB_STATUS_SUCCESS,
+                            "retry_count": retry_count,
+                            "error_message": None,
+                        },
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
         except Exception as exc:  # noqa: BLE001
             self._logger.error(
                 "parse_job processing failed",
                 extra={"job_id": job_id, "document_id": document_id, "error": str(exc)},
             )
+            # Decide whether to retry or mark as failed based on retry_count.
             async with self._session_factory() as session:  # type: ignore[call-arg]
-                await repo.mark_parse_job_failed(session=session, job_id=job_id, error_message=str(exc))
-                await repo.update_document_parse_error(session=session, document_id=document_id)
+                # Refresh job to get latest retry_count in case of concurrent updates.
+                latest = await repo.get_parse_job(session, job_id=job_id)
+                latest_retry = int(latest.get("retry_count", retry_count) or 0) if latest else retry_count
+                max_retries = 3
+                if latest_retry < max_retries:
+                    await repo.requeue_parse_job(
+                        session=session,
+                        job_id=job_id,
+                        retry_count=latest_retry + 1,
+                        error_message=str(exc),
+                    )
+                    new_status = PARSE_JOB_STATUS_QUEUED
+                    new_retry = latest_retry + 1
+                    final_failure = False
+                else:
+                    await repo.mark_parse_job_failed(session=session, job_id=job_id, error_message=str(exc))
+                    await repo.update_document_parse_error(session=session, document_id=document_id)
+                    new_status = PARSE_JOB_STATUS_FAILED
+                    new_retry = latest_retry
+                    final_failure = True
+
+            if user_id:
+                try:
+                    # Job status update.
+                    await send_event_to_user(
+                        user_id,
+                        "job.status_updated",
+                        {
+                            "job_id": job_id,
+                            "job_type": "parse",
+                            "workspace_id": workspace_id,
+                            "document_id": document_id,
+                            "status": new_status,
+                            "retry_count": new_retry,
+                            "error_message": str(exc),
+                        },
+                    )
+                    if final_failure:
+                        await send_event_to_user(
+                            user_id,
+                            "document.status_updated",
+                            {
+                                "workspace_id": workspace_id,
+                                "document_id": document_id,
+                                "status": DOCUMENT_STATUS_ERROR,
+                            },
+                        )
+                except Exception:  # noqa: BLE001
+                    pass
 
     async def fetch_and_process_next_jobs(self, batch_size: int = 1) -> int:
         """Fetch a batch of queued jobs and process them.

@@ -28,6 +28,7 @@ class Message(BaseModel):
     id: UUID
     role: str
     content: str
+    status: Optional[str] = None
     metadata: Optional[dict] = None
     created_at: Optional[datetime] = None
 
