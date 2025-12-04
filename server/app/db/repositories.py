@@ -438,23 +438,68 @@ async def list_messages(session: AsyncSession, conversation_id: str, user_id: st
 
 
 async def create_message(
-    session: AsyncSession, conversation_id: str, role: str, content: str, metadata: dict | None
+    session: AsyncSession,
+    conversation_id: str,
+    role: str,
+    content: str,
+    status: str | None = None,
+    metadata: dict | None = None,
 ) -> Mapping[str, Any]:
     message_id = new_uuid()
+    values = {
+        "id": message_id,
+        "conversation_id": conversation_id,
+        "role": role,
+        "content": content,
+        "metadata": metadata,
+    }
+    if status:
+        values["status"] = status
+        
     stmt = (
         sa.insert(models.messages)
-        .values(
-            id=message_id,
-            conversation_id=conversation_id,
-            role=role,
-            content=content,
-            metadata=metadata,
-        )
+        .values(**values)
         .returning(models.messages)
     )
     result = await session.execute(stmt)
     await session.commit()
     row = result.fetchone()
+    return _row_to_mapping(row)
+
+
+async def update_message(
+    session: AsyncSession,
+    message_id: str,
+    content: str | None = None,
+    status: str | None = None,
+    metadata: dict | None = None,
+) -> Mapping[str, Any]:
+    values: dict[str, Any] = {}
+    if content is not None:
+        values["content"] = content
+    if status is not None:
+        values["status"] = status
+    if metadata is not None:
+        values["metadata"] = metadata
+
+    if not values:
+        # No updates needed, return current state
+        stmt = sa.select(models.messages).where(models.messages.c.id == message_id)
+        result = await session.execute(stmt)
+        row = result.fetchone()
+        return _row_to_mapping(row)
+
+    stmt = (
+        sa.update(models.messages)
+        .where(models.messages.c.id == message_id)
+        .values(**values)
+        .returning(models.messages)
+    )
+    result = await session.execute(stmt)
+    await session.commit()
+    row = result.fetchone()
+    if not row:
+        raise ValueError(f"Message {message_id} not found for update")
     return _row_to_mapping(row)
 
 

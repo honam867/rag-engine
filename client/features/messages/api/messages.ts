@@ -3,8 +3,10 @@ import { apiFetch } from "@/lib/api-client";
 
 export interface Message {
   id: string;
+  conversation_id?: string; // Optional because API might not always return it in list, but used in websocket/optimistic
   role: string;
   content: string;
+  status?: string; // 'pending' | 'running' | 'done' | 'error'
   metadata?: Record<string, unknown> | null;
   created_at?: string;
 }

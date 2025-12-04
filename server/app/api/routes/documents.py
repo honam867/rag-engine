@@ -75,6 +75,12 @@ async def upload_documents(
 
         # Best-effort realtime notifications for new document and queued parse job.
         try:
+            created_at_str = doc_row.get("created_at")
+            if hasattr(created_at_str, "isoformat"):
+                created_at_str = created_at_str.isoformat()
+            else:
+                created_at_str = str(created_at_str) if created_at_str else None
+
             await send_event_to_user(
                 current_user.id,
                 "document.created",
@@ -85,7 +91,7 @@ async def upload_documents(
                         "title": doc_row["title"],
                         "status": DOCUMENT_STATUS_PENDING,
                         "source_type": doc_row["source_type"],
-                        "created_at": doc_row.get("created_at"),
+                        "created_at": created_at_str,
                     },
                 },
             )

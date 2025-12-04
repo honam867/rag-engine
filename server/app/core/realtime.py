@@ -32,13 +32,17 @@ class ConnectionManager:
         conns = self._connections.get(user_id, [])
         if not conns:
             return
+        
+        # Iterate over a copy to avoid modification issues if we remove connections
         for ws in list(conns):
             try:
                 await ws.send_json(message)
-            except Exception:  # noqa: BLE001
+            except Exception as exc:
+                # Log warning but continue
+                logger.warning("Failed to send realtime message to user", extra={"user_id": user_id, "error": str(exc)})
                 try:
                     await ws.close()
-                except Exception:  # noqa: BLE001
+                except Exception:
                     pass
                 self.disconnect(user_id, ws)
 

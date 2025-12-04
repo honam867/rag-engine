@@ -1,23 +1,43 @@
 "use client";
 
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { MessageSquare, ArrowLeft } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ChatMessageList } from "@/features/messages/components/ChatMessageList";
 import { ChatInput } from "@/features/messages/components/ChatInput";
-import { useMessageList } from "@/features/messages/hooks/useMessages";
+import { useMessageList, useSendMessage } from "@/features/messages/hooks/useMessages";
 import { useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 
 export default function ConversationPage() {
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const conversationId = params.conversationId as string;
   const workspaceId = params.workspaceId as string;
   
   const { data: messages, isLoading } = useMessageList(conversationId);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const sendMessageMutation = useSendMessage(conversationId);
   
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const hasSentInitialRef = useRef(false);
+  
+  // Handle initialPrompt from URL (e.g. from Workspace Dashboard)
+  useEffect(() => {
+    const initialPrompt = searchParams.get("initialPrompt");
+    if (initialPrompt && !hasSentInitialRef.current) {
+        hasSentInitialRef.current = true;
+        const decoded = decodeURIComponent(initialPrompt);
+        
+        // Send message (Optimistic UI will show it immediately)
+        sendMessageMutation.mutate({ content: decoded });
+        
+        // Clean up URL to prevent re-sending on refresh
+        // Use replace to not clutter history
+        router.replace(`/workspaces/${workspaceId}/conversations/${conversationId}`);
+    }
+  }, [searchParams, conversationId, sendMessageMutation, router, workspaceId]);
+
   // Auto-scroll to bottom
   useEffect(() => {
      if (messages?.length) {
