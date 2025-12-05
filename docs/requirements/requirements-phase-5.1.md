@@ -1,16 +1,23 @@
-# rag-engine-phase-5.1 – Cross-Process Realtime Bridge (Workers → WebSocket)
+# rag-engine-phase-5.1 – Cross-Process Realtime & Worker Wake-up
 
 ## 1. Mục tiêu Phase 5.1
 
-- Giải quyết vấn đề **realtime từ worker** trong kiến trúc nhiều process:
+- Giải quyết hai vấn đề trong kiến trúc nhiều process:
+  1. **Realtime từ worker**:
   - API server (FastAPI + WebSocket) chạy 1 process riêng.
   - `parse_worker.py` + `ingest_worker.py` chạy các process Python riêng.
   - Hiện tại: WebSocket client chỉ connect vào API process, nên mọi event emit từ worker (process khác) đang **không tới được client**.
-- Phase 5.1 bổ sung một lớp **bridge** để:
-  - Worker phát event (`document.status_updated`, `job.status_updated`, …) → event đi qua một kênh chung (dựa trên Supabase Postgres).
-  - API process lắng nghe kênh này và forward lại vào WebSocket `/ws` cho đúng `user_id`.
+  2. **Worker wake-up / latency**:
+  - `parse_worker` hiện lấy job bằng cách polling DB mỗi vài giây.
+  - Khoảng gap 1–5s giữa lúc user upload document và lúc worker bắt đầu xử lý tạo ra “thời gian chết”.
+- Phase 5.1 bổ sung:
+  - Một lớp **bridge** để:
+    - Worker phát event (`document.status_updated`, `job.status_updated`, …) → event đi qua một kênh chung (dựa trên Supabase Postgres).
+    - API process lắng nghe kênh này và forward lại vào WebSocket `/ws` cho đúng `user_id`.
+  - Một cơ chế **wake-up parse_worker**:
+    - API sau khi tạo `parse_job` sẽ `NOTIFY` để parse_worker biết có job mới ngay, thay vì chờ vòng polling.
 
-Mục tiêu là **không thay đổi luồng business chính** (parse, ingest, chat), chỉ thêm cơ chế chuyển tiếp event cross-process.
+Mục tiêu là **không thay đổi luồng business chính** (parse, ingest, chat), chỉ thêm cơ chế chuyển tiếp event cross-process và giảm tối đa độ trễ ở worker.
 
 ---
 
@@ -21,9 +28,13 @@ Mục tiêu là **không thay đổi luồng business chính** (parse, ingest, c
 - Chỉ áp dụng cho **backend**:
   - API server (FastAPI).
   - Workers (`parse_worker`, `ingest_worker`).
-- Thêm một **cross-process event bridge**:
-  - Worker publish event vào Supabase Postgres (LISTEN/NOTIFY hoặc tương đương).
-  - API process subscribe và chuyển tiếp event sang WebSocket.
+- Thêm hai cơ chế dựa trên Postgres:
+  - **Cross-process event bridge**:
+    - Worker publish event vào Supabase Postgres (LISTEN/NOTIFY).
+    - API process subscribe và chuyển tiếp event sang WebSocket.
+  - **Job wake-up cho parse_worker**:
+    - API `NOTIFY` khi tạo parse_job mới (hoặc khi requeue).
+    - parse_worker `LISTEN` và ngay lập tức đi lấy job mới.
 
 Không thay đổi:
 
@@ -67,7 +78,16 @@ Không thay đổi:
    - Sau Phase 5.1:
      - Worker publish event → API process forward `document.status_updated (ingested)` tới client.
 
-3. **Restart / multi-instance** (cơ bản):
+3. **Wake-up parse_worker khi có job mới**:
+   - Hiện tại:
+     - API tạo parse_job → parse_worker chỉ biết khi tới vòng polling tiếp theo.
+   - Sau Phase 5.1:
+     - API sau khi insert parse_job sẽ `NOTIFY parse_jobs`.
+     - parse_worker đang `LISTEN parse_jobs`:
+       - Nhận thông báo → ngay lập tức chạy `fetch_queued_parse_jobs` (bỏ idle sleep cho chu kỳ đó).
+       - Độ trễ giữa upload và bắt đầu OCR gần như bằng 0 (giới hạn bởi latency DB).
+
+4. **Restart / multi-instance** (cơ bản):
    - Nếu có 2 instance API đều listen:
      - Cả 2 đều nhận NOTIFY từ Postgres.
      - Instance nào đang giữ WebSocket cho `user_id` thì gửi được event.
@@ -124,4 +144,3 @@ Không thay đổi:
   - Durability audit log.
 - Tích hợp với Supabase Realtime (Postgres replication → client) thay vì tự viết LISTEN/NOTIFY.
 - Dùng Redis hoặc message broker khác nếu hệ thống scale nhiều instance / nhiều service hơn.
-

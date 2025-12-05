@@ -13,8 +13,8 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.app.core.constants import DOCUMENT_STATUS_INGESTED, DOCUMENT_STATUS_PARSED
+from server.app.core.event_bus import event_bus
 from server.app.core.logging import get_logger
-from server.app.core.realtime import send_event_to_user
 from server.app.db import models, repositories as repo
 from server.app.services.chunker import ChunkerService
 from server.app.services.rag_engine import RagEngineService
@@ -100,7 +100,7 @@ class IngestJobService:
                 async with self._session_factory() as session:  # type: ignore[call-arg]
                     owner_id = await repo.get_workspace_owner_id(session, workspace_id=workspace_id)
                 if owner_id:
-                    await send_event_to_user(
+                    await event_bus.publish(
                         owner_id,
                         "document.status_updated",
                         {

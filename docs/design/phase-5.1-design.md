@@ -1,18 +1,25 @@
-# phase-5.1-design – Cross-Process Event Bridge via Postgres
+# phase-5.1-design – Cross-Process Event Bridge & Worker Wake-up via Postgres
 
-Mục tiêu: thiết kế cơ chế để **worker processes** (parse_worker, ingest_worker) có thể phát realtime event tới WebSocket client đang kết nối vào API process, sử dụng chính Supabase Postgres làm bridge.
+Mục tiêu: thiết kế cơ chế để **worker processes** (parse_worker, ingest_worker) có thể:
+- Phát realtime event tới WebSocket client đang kết nối vào API process.
+- Nhận biết job mới gần như tức thì (wake-up) thay vì chỉ polling DB.
+
+Tất cả đều sử dụng chính Supabase Postgres làm bridge/event bus.
 
 ---
 
 ## 1. Kiến trúc tổng thể
 
 - Thêm một lớp **Event Bus** dựa trên Postgres LISTEN/NOTIFY:
-  - Worker: publish event → `pg_notify('rag_realtime', <json payload>)`.
+  - Worker (parse/ingest): publish event → `pg_notify('rag_realtime', <json payload>)`.
   - API process: có một task background `listen_realtime_events`:
     - `LISTEN rag_realtime`.
     - Khi có notification → parse JSON → gọi `send_event_to_user(user_id, type, payload)` (từ `core/realtime.py`).
+- Thêm **job wake-up channel** cho parse_worker:
+  - API: sau khi tạo parse_job → `pg_notify('parse_jobs', <json payload>)`.
+  - parse_worker: mở connection `LISTEN parse_jobs`, khi nhận notification → chạy ngay một vòng xử lý job queued (không cần đợi sleep).
 
-Sơ đồ:
+Sơ đồ realtime:
 
 ```text
 parse_worker / ingest_worker
@@ -25,18 +32,35 @@ API process (FastAPI + WebSocket)
   |-- send_event_to_user --> ConnectionManager --> WebSocket clients
 ```
 
+Sơ đồ wake-up parse_worker:
+
+```text
+API (upload document)
+  |  (insert parse_jobs + NOTIFY parse_jobs)
+  v
+Postgres (channel parse_jobs)
+  ^  (LISTEN)
+  |
+parse_worker
+  |-- fetch_queued_parse_jobs --> ParserPipelineService
+```
+
 ---
 
-## 2. Event envelope & channel
+## 2. Channels & payload
 
-### 2.1. Channel
+### 2.1. Channels
 
-- Dùng một channel chung:
+- Channel realtime (bridge worker → WebSocket):
   - Tên: `rag_realtime`.
-- Tất cả worker publish vào channel này:
-  - Không cần channel riêng cho parse/ingest; phân biệt bằng `type` trong payload.
+  - Tất cả worker publish vào channel này:
+    - Không cần channel riêng cho parse/ingest; phân biệt bằng `type` trong payload.
+- Channel wake-up parse_worker:
+  - Tên: `parse_jobs`.
+  - API publish vào channel này khi có parse_job mới (hoặc khi requeue).
+  - parse_worker LISTEN để biết có job mới cần xử lý.
 
-### 2.2. Payload JSON
+### 2.2. Payload JSON cho realtime
 
 - Định dạng payload JSON thống nhất:
 
@@ -51,6 +75,21 @@ API process (FastAPI + WebSocket)
 ```
 
 - `type` + `payload` sẽ được forward y nguyên sang WebSocket.
+
+### 2.3. Payload JSON cho wake-up parse_worker
+
+- Payload đơn giản (V1):
+
+```jsonc
+{
+  "document_id": "uuid",
+  "job_id": "uuid"
+}
+```
+
+- Lý do:
+  - Worker vẫn dùng DB làm source of truth; payload chỉ là “hint” để gọi `fetch_queued_parse_jobs` ngay.
+  - Worker không tin payload 100%, vẫn filter job theo `status='queued'` như hiện tại (idempotent, an toàn).
 
 ---
 
@@ -111,7 +150,7 @@ await event_bus.publish(
 
 ---
 
-## 4. Listener trong API process
+## 4. Listener trong API process (realtime bridge)
 
 ### 4.1. Listener task
 
@@ -191,39 +230,85 @@ async def startup() -> None:
   - Thay `send_event_to_user` trong `jobs_ingest.py` bằng `EventBus.publish(...)` khi document được ingest thành công:
     - `event_type="document.status_updated"`
     - `payload={"workspace_id": ..., "document_id": ..., "status": "ingested"}`.
+---
+
+## 6. Wake-up parse_worker chi tiết
+
+- API:
+  - Sau khi tạo parse_job (Phase 2/5 đã có), thêm bước:
+
+```sql
+SELECT pg_notify(
+  'parse_jobs',
+  json_build_object(
+    'document_id', :document_id,
+    'job_id', :job_id
+  )::text
+);
+```
+
+- parse_worker:
+  - Ngoài vòng lặp hiện tại, thêm một task listen:
+
+```python
+async def listen_parse_jobs_notifications():
+    conn = await asyncpg.connect(dsn=SUPABASE_DB_URL, **connect_args)
+
+    async def _handle(conn, pid, channel, payload: str):
+        # chỉ cần trigger một vòng fetch để giảm latency
+        await pipeline.fetch_and_process_next_jobs(batch_size=1)
+
+    await conn.add_listener("parse_jobs", _handle)
+    while True:
+        await asyncio.sleep(3600)
+```
+
+  - Ở `run_worker_loop`, khởi động cả:
+    - Task listen (trên một connection riêng).
+    - Vòng lặp polling DB (idle_sleep_seconds có thể tăng lên, vì đã có wake-up).
+
+Hành vi:
+- Nếu API và worker đều online:
+  - parse_worker nhận NOTIFY ngay khi có parse_job mới → xử lý gần như tức thì.
+- Nếu NOTIFY bị miss / API không gửi:
+  - Vòng polling DB vẫn là fallback (không mất job).
 
 ---
 
-## 6. Behaviour & fallback
+## 7. Behaviour & fallback
 
-### 6.1. Khi mọi thứ bình thường
+### 7.1. Khi mọi thứ bình thường
 
 - Flow parse:
-  - Worker:
-    - Update DB (documents, parse_jobs).
-    - `EventBus.publish` → `pg_notify`.
   - API:
-    - Listener nhận notification → `send_event_to_user`.
+    - Insert parse_job.
+    - `pg_notify('parse_jobs', ...)`.
+  - parse_worker:
+    - Nhận NOTIFY → xử lý job queued.
+    - Cập nhật DB (documents, parse_jobs).
+    - `EventBus.publish` → `pg_notify('rag_realtime', ...)`.
+  - API listener:
+    - Nhận notification từ `rag_realtime` → `send_event_to_user`.
   - Client:
-    - WebSocket nhận `job.status_updated` / `document.status_updated`.
+    - WebSocket nhận `job.status_updated` / `document.status_updated` realtime.
 
-### 6.2. Khi API process tắt / không listen
+### 7.2. Khi API process tắt / không listen
 
-- Worker vẫn publish `pg_notify`, nhưng không ai LISTEN:
+- Worker vẫn publish `pg_notify('rag_realtime', ...)`, nhưng không ai LISTEN:
   - Notification bị mất (LISTEN/NOTIFY không queue).
   - DB vẫn chứa trạng thái cuối cùng (parsed/ingested/error).
 - Khi API lên lại:
   - Client sync lại trạng thái qua REST (React Query).
   - Realtime tiếp tục cho các event mới.
 
-### 6.3. Khi worker tắt
+### 7.3. Khi worker tắt
 
 - Không ảnh hưởng WebSocket layer.
 - Tình trạng parse/ingest không đổi so với hiện tại (Phase 5).
 
 ---
 
-## 7. Notes / TODO
+## 8. Notes / TODO
 
 - **An toàn & bảo mật:**
   - Payload nội bộ (worker → DB → API) không expose trực tiếp ra ngoài; chỉ đi trong hạ tầng backend.
@@ -238,5 +323,8 @@ async def startup() -> None:
     - Thêm bảng `event_log` và cho API đọc event non-realtime từ đó (polling nhẹ).
     - Hoặc dùng Supabase Realtime & replication để push trực tiếp tới client (khi đó thiết kế bridge thay đổi).
 
-Phase 5.1 dừng ở mức đảm bảo **event từ worker có đường đi tới WebSocket client trong multi-process**, sử dụng đúng stack hiện có (Supabase Postgres) và không đổi contract đã public ở Phase 5. Implement backend sẽ chỉ cần tạo `EventBus`, listener ở API, và refactor các chỗ emit event trong worker sang publish qua bus.
+Phase 5.1 dừng ở mức:
+- Đảm bảo **event từ worker có đường đi tới WebSocket client trong multi-process**.
+- Giảm tối đa độ trễ `parse_worker` nhận job mới bằng LISTEN/NOTIFY.
+Sử dụng đúng stack hiện có (Supabase Postgres) và không đổi contract đã public ở Phase 5.
 
