@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.app.core.constants import DOCUMENT_STATUS_PENDING, PARSE_JOB_STATUS_QUEUED
+from server.app.core.event_bus import notify_parse_job_created
 from server.app.core.realtime import send_event_to_user
 from server.app.core.security import CurrentUser, get_current_user
 from server.app.db import repositories as repo
@@ -108,6 +109,8 @@ async def upload_documents(
                     "error_message": parse_job.get("error_message"),
                 },
             )
+            # Wake up parse_worker via Postgres NOTIFY so it can pick up the job immediately.
+            await notify_parse_job_created(document_id=str(doc_row["id"]), job_id=str(parse_job["id"]))
         except Exception:
             # Realtime is best-effort; failures must not affect upload.
             pass

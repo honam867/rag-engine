@@ -42,12 +42,13 @@ export function ConversationSidebar() {
                     key={conv.id}
                     href={`/workspaces/${workspaceId}/conversations/${conv.id}`}
                     className={cn(
-                      "flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground transition-colors",
+                      "flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground transition-colors min-w-0",
                       isActive ? "bg-accent text-accent-foreground" : "text-muted-foreground"
                     )}
+                    title={conv.title || "Untitled Conversation"}
                   >
-                    <MessageSquare className="h-4 w-4" />
-                    <span className="truncate">{conv.title || "Untitled Conversation"}</span>
+                    <MessageSquare className="h-4 w-4 shrink-0" />
+                    <span className="truncate pr-2 flex-1">{conv.title || "Untitled Conversation"}</span>
                   </Link>
                 );
               })}

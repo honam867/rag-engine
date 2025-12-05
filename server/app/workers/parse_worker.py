@@ -10,10 +10,34 @@ import asyncio
 
 from server.app.core.config import get_settings
 from server.app.core.logging import get_logger, setup_logging
+from server.app.core.redis_client import get_redis
 from server.app.db import repositories as repo
 from server.app.db.session import async_session
 from server.app.services.docai_client import DocumentAIClient
 from server.app.services.parser_pipeline import ParserPipelineService
+
+
+async def listen_parse_jobs_notifications(wakeup_event: asyncio.Event) -> None:
+    """Listen for Redis parse_jobs channel and wake the worker loop."""
+    logger = get_logger(__name__)
+    while True:
+        try:
+            redis = get_redis()
+            pubsub = redis.pubsub()
+            await pubsub.subscribe("parse_jobs")
+            logger.info("Listening for parse_jobs notifications via Redis")
+
+            async for message in pubsub.listen():
+                if message.get("type") != "message":
+                    continue
+                # Không tin payload là source-of-truth; chỉ wake-up vòng loop chính.
+                wakeup_event.set()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "parse_jobs Redis listener encountered error; will retry",
+                extra={"error": str(exc)},
+            )
+            await asyncio.sleep(5)
 
 
 async def run_worker_loop() -> None:
@@ -62,11 +86,20 @@ async def run_worker_loop() -> None:
     except Exception as exc:  # noqa: BLE001
         logger.error("Failed to heal stale parse_jobs on startup", extra={"error": str(exc)})
 
+    # Start background listener for NOTIFY wakeups.
+    wakeup_event: asyncio.Event = asyncio.Event()
+    asyncio.create_task(listen_parse_jobs_notifications(wakeup_event))
+
     while True:
         try:
             processed = await pipeline.fetch_and_process_next_jobs(batch_size=1)
             if processed == 0:
-                await asyncio.sleep(idle_sleep_seconds)
+                # Wait either for a NOTIFY wake-up or for the idle timeout.
+                try:
+                    await asyncio.wait_for(wakeup_event.wait(), timeout=idle_sleep_seconds)
+                except asyncio.TimeoutError:
+                    pass
+                wakeup_event.clear()
             else:
                 await asyncio.sleep(busy_sleep_seconds)
         except Exception as exc:  # noqa: BLE001

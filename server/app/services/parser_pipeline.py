@@ -26,7 +26,7 @@ from server.app.core.constants import (
     PARSE_JOB_STATUS_SUCCESS,
 )
 from server.app.core.logging import get_logger
-from server.app.core.realtime import send_event_to_user
+from server.app.core.event_bus import event_bus
 from server.app.db import models, repositories as repo
 from server.app.services import storage_r2
 from server.app.services.docai_client import DocumentAIClient
@@ -80,7 +80,7 @@ class ParserPipelineService:
             await repo.mark_parse_job_running(session, job_id=job_id)
         if user_id:
             try:
-                await send_event_to_user(
+                await event_bus.publish(
                     user_id,
                     "job.status_updated",
                     {
@@ -133,7 +133,7 @@ class ParserPipelineService:
             # Realtime notifications for success.
             if user_id:
                 try:
-                    await send_event_to_user(
+                    await event_bus.publish(
                         user_id,
                         "document.status_updated",
                         {
@@ -142,7 +142,7 @@ class ParserPipelineService:
                             "status": DOCUMENT_STATUS_PARSED,
                         },
                     )
-                    await send_event_to_user(
+                    await event_bus.publish(
                         user_id,
                         "job.status_updated",
                         {
@@ -188,7 +188,7 @@ class ParserPipelineService:
             if user_id:
                 try:
                     # Job status update.
-                    await send_event_to_user(
+                    await event_bus.publish(
                         user_id,
                         "job.status_updated",
                         {
@@ -202,7 +202,7 @@ class ParserPipelineService:
                         },
                     )
                     if final_failure:
-                        await send_event_to_user(
+                        await event_bus.publish(
                             user_id,
                             "document.status_updated",
                             {

@@ -25,6 +25,9 @@ export default function ConversationPage() {
   // Handle initialPrompt from URL (e.g. from Workspace Dashboard)
   useEffect(() => {
     const initialPrompt = searchParams.get("initialPrompt");
+    
+    // Only trigger if we have a prompt AND the message list query has initialized (even if loading)
+    // This ensures cancelQueries in mutation works correctly against the active query.
     if (initialPrompt && !hasSentInitialRef.current) {
         hasSentInitialRef.current = true;
         const decoded = decodeURIComponent(initialPrompt);
@@ -32,11 +35,11 @@ export default function ConversationPage() {
         // Send message (Optimistic UI will show it immediately)
         sendMessageMutation.mutate({ content: decoded });
         
-        // Clean up URL to prevent re-sending on refresh
-        // Use replace to not clutter history
-        router.replace(`/workspaces/${workspaceId}/conversations/${conversationId}`);
+        // Use window.history.replaceState to clean URL without triggering a router navigation/remount
+        const newUrl = window.location.pathname;
+        window.history.replaceState({}, '', newUrl);
     }
-  }, [searchParams, conversationId, sendMessageMutation, router, workspaceId]);
+  }, [searchParams, sendMessageMutation]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -66,7 +69,16 @@ export default function ConversationPage() {
       <div className="flex-1 min-h-0 relative">
           <ScrollArea className="h-full w-full">
              <div className="px-4 md:px-0 py-6 w-full max-w-3xl mx-auto">
-                {isLoading ? (
+                {/* 
+                   Prioritize showing messages if we have any (from cache/optimistic).
+                   Only show loading skeleton if we have NO messages AND are loading.
+                */}
+                {messages && messages.length > 0 ? (
+                    <>
+                        <ChatMessageList messages={messages} />
+                        <div ref={bottomRef} className="h-4" />
+                    </>
+                ) : isLoading ? (
                     <div className="space-y-6 px-4">
                         {[1, 2, 3].map(i => (
                             <div key={i} className="flex gap-4 items-start">
@@ -79,10 +91,10 @@ export default function ConversationPage() {
                         ))}
                     </div>
                 ) : (
-                    <>
-                        <ChatMessageList messages={messages || []} />
-                        <div ref={bottomRef} className="h-4" />
-                    </>
+                    <div className="flex flex-col items-center justify-center p-8 text-center h-64">
+                        <MessageSquare className="h-12 w-12 text-muted-foreground mb-4" />
+                        <p className="text-sm text-muted-foreground">Start a conversation to ask questions about your documents.</p>
+                    </div>
                 )}
              </div>
           </ScrollArea>

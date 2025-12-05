@@ -17,7 +17,6 @@ export function useRealtimeEventHandler() {
 
   const handleEvent = useCallback(
     (event: RealtimeEvent) => {
-      console.log('[Realtime] Event received:', event.type, event.payload);
       const { type, payload } = event;
 
       switch (type) {
@@ -64,33 +63,59 @@ export function useRealtimeEventHandler() {
             
             // 1. Update Cache (for all cases)
             queryClient.setQueryData(conversationKeys.messages(conversation_id), (oldData: any) => {
-                if (!oldData) return oldData;
-                const items = Array.isArray(oldData) ? oldData : oldData.items || [];
-                
-                // If message already exists (e.g. optimistic update or status update), update it
-                const existingIndex = items.findIndex((m: any) => m.id === message?.id || m.id === payload.message_id);
-                
-                if (existingIndex > -1) {
-                    const newItems = [...items];
-                    // If it's a status update, payload might just have message_id and status
-                    if (type === 'message.status_updated') {
+                // Initialize as array. fetchMessages unwraps .items, so cache is Message[]
+                const newItems = Array.isArray(oldData) ? [...oldData] : [];
+
+                // Case A: Status Update (message already exists by ID)
+                if (type === 'message.status_updated') {
+                    const existingIndex = newItems.findIndex((m: any) => m.id === payload.message_id);
+                    if (existingIndex > -1) {
                         newItems[existingIndex] = { ...newItems[existingIndex], status };
-                         // If content is provided in payload (Phase 5 backend might support streaming later)
-                         if (payload.content) {
-                             newItems[existingIndex].content = payload.content;
-                         }
-                    } else {
-                        // Full message replace
-                        newItems[existingIndex] = message;
+                        if (payload.content) {
+                            newItems[existingIndex].content = payload.content;
+                        }
                     }
-                    return Array.isArray(oldData) ? newItems : { ...oldData, items: newItems };
-                } else if (type === 'message.created') {
-                    // New message -> Append
-                    const newItems = [...items, message];
-                    return Array.isArray(oldData) ? newItems : { ...oldData, items: newItems };
+                    return newItems;
+                }
+
+                // Case B: Message Created (Check for duplication/optimistic replace)
+                if (type === 'message.created') {
+                    const incomingMsg = message;
+                    
+                    // 1. Check if ID already exists (idempotency)
+                    const idExists = newItems.some((m: any) => m.id === incomingMsg.id);
+                    if (idExists) {
+                        return newItems; 
+                    }
+
+                    // 2. Try to find a matching Optimistic Message to replace
+                    let replaced = false;
+                    
+                    if (incomingMsg.role === 'user') {
+                        // Find user optimistic message with same content
+                        const optIdx = newItems.findIndex((m: any) => m.isOptimistic && m.role === 'user' && m.content === incomingMsg.content);
+                        if (optIdx > -1) {
+                            newItems[optIdx] = incomingMsg; // Replace optimistic with real
+                            replaced = true;
+                        }
+                    } else if (incomingMsg.role === 'ai') {
+                        // Find AI optimistic message (usually pending/empty)
+                        // We replace the *first* pending optimistic AI message we find
+                        const optIdx = newItems.findIndex((m: any) => m.isOptimistic && m.role === 'ai');
+                        if (optIdx > -1) {
+                            newItems[optIdx] = incomingMsg; // Replace optimistic with real
+                            replaced = true;
+                        }
+                    }
+
+                    if (!replaced) {
+                        newItems.push(incomingMsg);
+                    }
+                    
+                    return newItems;
                 }
                 
-                return oldData;
+                return newItems;
             });
 
             // 2. Notification Logic (Smart Toast)

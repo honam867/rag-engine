@@ -9,6 +9,7 @@ export interface Message {
   status?: string; // 'pending' | 'running' | 'done' | 'error'
   metadata?: Record<string, unknown> | null;
   created_at?: string;
+  isOptimistic?: boolean;
 }
 
 export interface MessageListResponse {

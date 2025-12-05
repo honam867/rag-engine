@@ -1,9 +1,12 @@
+import asyncio
+
 from fastapi import FastAPI
 import sqlalchemy as sa
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 from server.app.api.routes import conversations, documents, me, messages, realtime, workspaces
+from server.app.core.event_bus import listen_realtime_events
 from server.app.core.logging import get_logger, setup_logging
 from server.app.db.session import engine
 from server.app.schemas.common import HealthResponse
@@ -43,6 +46,8 @@ async def validate_supabase_connection() -> None:
         logger.warning("Connect to Supabase database failed (startup check only)", exc_info=True)
     # Check R2 config presence (non-blocking)
     check_r2_config_ready()
+    # Start background listener for cross-process realtime events.
+    asyncio.create_task(listen_realtime_events())
 
 
 # Health

@@ -1,4 +1,5 @@
 from typing import Any
+import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,7 +16,7 @@ from server.app.core.config import get_settings
 from server.app.core.realtime import send_event_to_user
 from server.app.core.security import CurrentUser, get_current_user
 from server.app.db import repositories as repo
-from server.app.db.session import get_db_session
+from server.app.db.session import get_db_session, async_session
 from server.app.schemas.conversations import Message, MessageCreate, MessageListResponse
 from server.app.services.rag_engine import RagEngineService
 
@@ -33,6 +34,79 @@ async def _ensure_conversation(session: AsyncSession, conversation_id: str, user
     return conv
 
 
+async def _process_ai_message_background(
+    ai_message_id: str,
+    conversation_id: str,
+    workspace_id: str,
+    user_id: str,
+    question: str,
+) -> None:
+    """Background task: call RAG engine and update the AI message."""
+    settings = get_settings()
+    rag_engine = RagEngineService(settings=settings.rag)
+
+    try:
+        rag_result = await rag_engine.query(
+            workspace_id=workspace_id,
+            question=question,
+            system_prompt=RAG_DEFAULT_SYSTEM_PROMPT,
+            mode=settings.rag.query_mode,
+        )
+        answer = rag_result.get("answer") or ""
+        citations = rag_result.get("citations") or []
+
+        # Update AI message as done in a fresh DB session.
+        async with async_session() as bg_session:  # type: ignore[call-arg]
+            updated_ai_msg = await repo.update_message(
+                session=bg_session,
+                message_id=ai_message_id,
+                content=answer or "Xin lỗi, hiện tại mình không thể trả lời câu hỏi này.",
+                status=MESSAGE_STATUS_DONE,
+                metadata={"citations": citations} if citations else {},
+            )
+
+        # Realtime event: AI message done.
+        try:
+            await send_event_to_user(
+                user_id,
+                "message.status_updated",
+                {
+                    "workspace_id": workspace_id,
+                    "conversation_id": conversation_id,
+                    "message_id": ai_message_id,
+                    "status": MESSAGE_STATUS_DONE,
+                    "content": updated_ai_msg.get("content") or answer,
+                },
+            )
+        except Exception:
+            # Best-effort realtime.
+            pass
+    except Exception as exc:
+        # On failure, mark AI message as error.
+        error_msg = f"Error generating response: {str(exc)}"
+        async with async_session() as bg_session:  # type: ignore[call-arg]
+            await repo.update_message(
+                session=bg_session,
+                message_id=ai_message_id,
+                content=error_msg,
+                status=MESSAGE_STATUS_ERROR,
+            )
+
+        try:
+            await send_event_to_user(
+                user_id,
+                "message.status_updated",
+                {
+                    "workspace_id": workspace_id,
+                    "conversation_id": conversation_id,
+                    "message_id": ai_message_id,
+                    "status": MESSAGE_STATUS_ERROR,
+                },
+            )
+        except Exception:
+            pass
+
+
 @router.get("", response_model=MessageListResponse)
 async def list_messages(
     conversation_id: str,
@@ -44,7 +118,7 @@ async def list_messages(
     return MessageListResponse(items=[_to_message(r) for r in rows])
 
 
-@router.post("", response_model=Message)
+@router.post("", response_model=MessageListResponse)
 async def create_message(
     conversation_id: str,
     body: MessageCreate,
@@ -131,76 +205,19 @@ async def create_message(
     except Exception:
         pass
 
-    # 4. Generate AI Response (RAG)
-    # Note: This is synchronous/blocking in this V1 implementation.
-    try:
-        settings = get_settings()
-        # Initialize RagEngineService with specific settings if needed, or defaults
-        rag_engine = RagEngineService(settings=settings.rag)
-
-        rag_result = await rag_engine.query(
+    # 4. Trigger background RAG processing and return immediately.
+    asyncio.get_event_loop().create_task(
+        _process_ai_message_background(
+            ai_message_id=str(ai_msg["id"]),
+            conversation_id=conversation_id,
             workspace_id=workspace_id,
+            user_id=current_user.id,
             question=body.content,
-            system_prompt=RAG_DEFAULT_SYSTEM_PROMPT,
-            mode=settings.rag.query_mode,
         )
-        answer = rag_result.get("answer") or ""
-        citations = rag_result.get("citations") or []
+    )
 
-        # 5. Update AI Message (Done)
-        updated_ai_msg = await repo.update_message(
-            session=session,
-            message_id=str(ai_msg["id"]),
-            content=answer or "Xin lỗi, hiện tại mình không thể trả lời câu hỏi này.",
-            status=MESSAGE_STATUS_DONE,
-            metadata={"citations": citations} if citations else {},
-        )
-
-        # 6. Send Realtime Event (AI Done)
-        try:
-            await send_event_to_user(
-                current_user.id,
-                "message.status_updated",
-                {
-                    "workspace_id": workspace_id,
-                    "conversation_id": conversation_id,
-                    "message_id": str(ai_msg["id"]),
-                    "status": MESSAGE_STATUS_DONE,
-                    "content": answer,
-                },
-            )
-        except Exception:
-            pass
-
-        return _to_message(updated_ai_msg)
-
-    except Exception as exc:
-        # Handle Failure: Update AI message to Error
-        # Ensure we capture the error state in DB
-        error_msg = f"Error generating response: {str(exc)}"
-        updated_ai_msg = await repo.update_message(
-            session=session,
-            message_id=str(ai_msg["id"]),
-            content=error_msg,
-            status=MESSAGE_STATUS_ERROR,
-        )
-        
-        # Notify Error
-        try:
-             await send_event_to_user(
-                current_user.id,
-                "message.status_updated",
-                {
-                    "workspace_id": workspace_id,
-                    "conversation_id": conversation_id,
-                    "message_id": str(ai_msg["id"]),
-                    "status": MESSAGE_STATUS_ERROR,
-                },
-            )
-        except Exception:
-            pass
-
-        return _to_message(updated_ai_msg)
+    # Return both user and AI pending messages so client has real IDs.
+    return MessageListResponse(items=[_to_message(user_msg), _to_message(ai_msg)])
 
 
 @router.delete("/{message_id}", status_code=status.HTTP_204_NO_CONTENT)
