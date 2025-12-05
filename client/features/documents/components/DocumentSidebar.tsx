@@ -1,19 +1,12 @@
 "use client";
 
-import { useState } from "react";
-import { Plus, FileText, Loader2, CheckCircle, AlertCircle, Clock, ScanText } from "lucide-react";
+import { useRef } from "react";
+import { Plus, FileText, Loader2, CheckCircle, AlertCircle, Clock, ScanText, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
-import { DocumentUploadZone } from "./DocumentUploadZone";
-import { useWorkspaceDocuments } from "../hooks/useDocuments";
+import { useWorkspaceDocuments, useUploadDocuments } from "../hooks/useDocuments";
 import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 
 interface DocumentSidebarProps {
   workspaceId: string;
@@ -22,7 +15,21 @@ interface DocumentSidebarProps {
 
 export function DocumentSidebar({ workspaceId, className }: DocumentSidebarProps) {
   const { data: documents, isLoading } = useWorkspaceDocuments(workspaceId);
-  const [isUploadOpen, setIsUploadOpen] = useState(false);
+  const { mutateAsync: upload, isPending } = useUploadDocuments(workspaceId);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      try {
+        await upload(e.target.files);
+        toast.success("Started uploading documents");
+      } catch (error) {
+        toast.error("Failed to upload documents");
+      } finally {
+        if (fileInputRef.current) fileInputRef.current.value = "";
+      }
+    }
+  };
 
   const getStatusIcon = (status: string) => {
     switch (status) {
@@ -42,26 +49,10 @@ export function DocumentSidebar({ workspaceId, className }: DocumentSidebarProps
     <div className={cn("flex flex-col h-full bg-muted/10 border-l", className)}>
       <div className="flex h-14 items-center justify-between border-b px-4 shrink-0">
         <span className="font-semibold text-sm">Documents</span>
-        <Dialog open={isUploadOpen} onOpenChange={setIsUploadOpen}>
-          <DialogTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-8 w-8">
-              <Plus className="h-4 w-4" />
-              <span className="sr-only">Upload</span>
-            </Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Upload Documents</DialogTitle>
-            </DialogHeader>
-            <div className="pt-4">
-               <DocumentUploadZone workspaceId={workspaceId} />
-            </div>
-          </DialogContent>
-        </Dialog>
       </div>
 
       <ScrollArea className="flex-1">
-        <div className="p-2 space-y-2">
+        <div className="p-2 space-y-1">
           {isLoading && (
             <div className="flex items-center justify-center p-4">
               <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
@@ -69,28 +60,47 @@ export function DocumentSidebar({ workspaceId, className }: DocumentSidebarProps
           )}
 
           {!isLoading && documents?.length === 0 && (
-             <div className="text-center py-8 px-4 text-xs text-muted-foreground border-dashed border rounded m-2">
-                No documents. <br/> Click + to upload.
+             <div className="text-center py-4 px-4 text-xs text-muted-foreground">
+                No documents yet.
              </div>
           )}
 
           {documents?.map((doc) => (
              <div 
                 key={doc.id} 
-                className="group flex items-center justify-between p-2 rounded-md hover:bg-accent hover:text-accent-foreground transition-colors border border-transparent hover:border-border"
-                title={`Status: ${doc.status}`}
+                className="group flex items-center justify-between p-2 rounded-md hover:bg-accent hover:text-accent-foreground transition-colors border border-transparent hover:border-border cursor-default"
+                title={`${doc.title} - ${doc.status}`}
              >
-                <div className="flex items-center gap-2 overflow-hidden">
+                <div className="flex items-center gap-2 overflow-hidden w-full min-w-0">
                     <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
-                    <span className="text-sm font-medium truncate" title={doc.title}>
-                        {doc.title}
-                    </span>
+                    <span className="text-sm font-medium truncate pr-2 flex-1">{doc.title}</span>
                 </div>
-                <div className="shrink-0 pl-2">
+                <div className="shrink-0 pl-1">
                     {getStatusIcon(doc.status)}
                 </div>
              </div>
           ))}
+
+          {/* Upload Button as List Item */}
+          <div className="pt-2">
+            <input 
+                type="file" 
+                multiple 
+                className="hidden" 
+                ref={fileInputRef}
+                onChange={handleFileSelect}
+                disabled={isPending}
+            />
+            <Button 
+                variant="outline" 
+                className="w-full gap-2 border-dashed bg-background text-muted-foreground hover:text-foreground h-9" 
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isPending}
+            >
+                {isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Upload className="h-3 w-3" />}
+                <span className="text-xs">Upload New Document</span>
+            </Button>
+          </div>
         </div>
       </ScrollArea>
     </div>

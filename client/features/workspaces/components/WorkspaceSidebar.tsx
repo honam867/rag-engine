@@ -72,12 +72,13 @@ export function WorkspaceSidebar() {
                                 key={ws.id}
                                 href={`/workspaces/${ws.id}`}
                                 className={cn(
-                                    "flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground transition-colors",
+                                    "flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground transition-colors min-w-0",
                                     isActive ? "bg-accent text-accent-foreground" : "text-muted-foreground"
                                 )}
+                                title={ws.name}
                             >
-                                <Folder className={cn("h-4 w-4", isActive ? "fill-current" : "")} />
-                                <span className="truncate">{ws.name}</span>
+                                <Folder className={cn("h-4 w-4 shrink-0", isActive ? "fill-current" : "")} />
+                                <span className="truncate pr-2">{ws.name}</span>
                             </Link>
                         );
                     })}

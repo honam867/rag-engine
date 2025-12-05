@@ -15,13 +15,9 @@
   - `docs/design/phase-5.1-design.md`
 
 ## 3. Files touched (server)
-- `server/app/core/event_bus.py`:
-  - Thêm `EventBus` dùng Postgres `pg_notify` trên channel `rag_realtime`.
-  - Hàm `listen_realtime_events()`:
-    - Mở kết nối asyncpg tới Supabase Postgres.
-    - `LISTEN rag_realtime` và forward notification sang `send_event_to_user` (WebSocket) theo `user_id`.
-  - Hàm `notify_parse_job_created(document_id, job_id)`:
-    - Gửi `pg_notify('parse_jobs', payload)` để đánh thức `parse_worker`.
+- `server/app/core/event_bus.py` (Phase 5.1, **đã được thay thế ở Phase 6**):
+  - Ban đầu: thêm `EventBus` dùng Postgres `pg_notify` trên channel `rag_realtime`, `listen_realtime_events()` với asyncpg `LISTEN`, và `notify_parse_job_created(...)` dùng `pg_notify('parse_jobs', ...)`.
+  - Sau Phase 6: file này đã chuyển sang implementation Redis Event Bus; phần dùng Postgres LISTEN/NOTIFY không còn được sử dụng.
 - `server/app/main.py`:
   - Trong sự kiện `startup`, sau khi validate DB + R2, khởi động background task `listen_realtime_events()` để bridge worker → WebSocket.
 - `server/app/services/parser_pipeline.py`:
@@ -110,4 +106,3 @@ sequenceDiagram
   - Nếu về sau scale nhiều instance API, có thể cần cơ chế fan-out giữa các instance (ngoài phạm vi Phase 5.1).
 - Future work:
   - Có thể trích xuất logic wake-up ingest_worker riêng nếu sau này có `ingest_jobs` table và retry model giống parse_worker.
-

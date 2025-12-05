@@ -246,49 +246,52 @@ class RealtimeService:
 ### 4.1. Chat – POST /conversations/{conversation_id}/messages
 
 - File: `server/app/api/routes/messages.py`
-- Bổ sung logic:
+- Luồng thiết kế:
   - Sau khi lưu message user:
-    - Gọi `RealtimeService.notify_message_created(...)`.
-  - Trước khi gọi RAG:
-    - Tạo message AI với `status='pending'` (có thể để content rỗng hoặc “Thinking…”).
-    - Gọi `notify_message_created` cho message AI.
-  - Sau khi RAG trả answer:
+    - Gửi event `message.created` cho user message.
+  - Tạo message AI với `status='pending'` (content rỗng) để làm placeholder:
+    - Gửi event `message.created` cho AI pending.
+  - Việc gọi RAG có thể:
+    - **(Hiện tại)** chạy trong background task (non-blocking HTTP).
+    - Hoặc synchronous trong route (về mặt thiết kế, Phase 5 chấp nhận cả hai).
+  - Khi RAG trả answer:
     - Cập nhật `content`, `metadata.citations`, `status='done'`.
-    - Gọi `notify_message_status_updated` (hoặc `notify_message_updated`).
+    - Gửi event `message.status_updated` cho message AI.
 
-Pseudo-code:
+Pseudo-code cho implementation **hiện tại** (non-blocking):
 
 ```python
 async def create_message(...):
-    # 1) create user message
+    # 1) create user message (done)
     user_msg = await messages_repo.create_user_message(...)
     await realtime_service.notify_message_created(user_msg)
 
-    # 2) create AI message placeholder
-    ai_msg = await messages_repo.create_ai_message(conversation_id, status="pending")
+    # 2) create AI message placeholder (pending)
+    ai_msg = await messages_repo.create_ai_message(conversation_id, status="pending", content="")
     await realtime_service.notify_message_created(ai_msg)
 
-    # 3) call RAG
-    rag_result = await rag_engine.query(...)
-
-    # 4) update AI message
-    await messages_repo.update_ai_message(
-        ai_msg.id,
-        content=rag_result.answer,
-        metadata={"citations": rag_result.citations},
-        status="done",
-    )
-    await realtime_service.notify_message_status_updated(
-        ai_msg.id,
-        status="done",
+    # 3) schedule background RAG processing (không block HTTP)
+    background_tasks.add_task(
+        process_ai_message_background,
+        ai_message_id=ai_msg.id,
         conversation_id=conversation_id,
         workspace_id=workspace_id,
+        user_id=current_user.id,
+        question=body.content,
     )
 
-    # 5) HTTP response như hiện tại
+    # 4) HTTP response trả về ngay cả user_msg và ai_msg (pending)
+    return MessageListResponse(items=[user_msg, ai_msg])
+
+
+async def process_ai_message_background(...):
+    rag_result = await rag_engine.query(...)
+    # update AI message → done / error
+    await messages_repo.update_ai_message(...)
+    await realtime_service.notify_message_status_updated(...)
 ```
 
-> Lưu ý: V1 có thể giữ behaviour HTTP như hiện tại (trả luôn message user + ai). Phase sau nếu chuyển sang xử lý RAG async thì chỉ cần đổi bước 3–4, contract WebSocket giữ nguyên.
+> Lưu ý: WebSocket contract (`message.created`, `message.status_updated`) giữ nguyên; Phase 5 chỉ thay đổi “thời điểm” xử lý RAG sang background để API response nhanh hơn.
 
 ### 4.2. Documents – upload / status update
 
@@ -419,4 +422,3 @@ async def heal_stuck_jobs():
    - Simulate error trong worker để kiểm tra retry/self-heal & event.
 
 Phase 5 không yêu cầu thay đổi UI ngay trong repo này, nhưng thiết kế trên đảm bảo client có thể xây dựng phần realtime một cách đơn giản, dựa trên WebSocket `/ws` và event model thống nhất.
-

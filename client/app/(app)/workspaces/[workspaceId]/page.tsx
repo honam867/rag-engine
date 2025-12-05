@@ -10,7 +10,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { useWorkspaceDocuments } from "@/features/documents/hooks/useDocuments";
 import { useCreateConversation } from "@/features/conversations/hooks/useConversations";
 import { RecentConversations } from "@/features/conversations/components/RecentConversations";
-import { DocumentSidebar } from "@/features/documents/components/DocumentSidebar";
+import { WorkspaceDocumentsPanel } from "@/features/documents/components/WorkspaceDocumentsPanel";
 
 export default function WorkspaceDashboardPage() {
   const params = useParams();
@@ -37,7 +37,8 @@ export default function WorkspaceDashboardPage() {
       // 2. Navigate immediately with initial prompt
       // We encode it to safely pass via URL
       const encodedPrompt = encodeURIComponent(input.trim());
-      router.push(`/workspaces/${workspaceId}/conversations/${conversation.id}?initialPrompt=${encodedPrompt}`);
+      const targetUrl = `/workspaces/${workspaceId}/conversations/${conversation.id}?initialPrompt=${encodedPrompt}`;
+      router.push(targetUrl);
     } catch (error) {
       console.error("Failed to start conversation:", error);
       setIsSubmitting(false);
@@ -52,11 +53,11 @@ export default function WorkspaceDashboardPage() {
   };
 
   return (
-    <div className="flex h-full max-h-full bg-background overflow-hidden">
-        {/* Main Content Area (Left) */}
+    <div className="flex h-full w-full bg-background overflow-hidden">
+        {/* Main Content Area - Full Width */}
         <div className="flex-1 flex flex-col h-full overflow-hidden relative">
             <ScrollArea className="h-full">
-                <div className="flex flex-col items-center justify-start min-h-full p-8 pb-20 max-w-4xl mx-auto w-full space-y-12 pt-[10vh]">
+                <div className="flex flex-col items-center justify-start min-h-full p-8 pb-20 max-w-4xl mx-auto w-full space-y-12 pt-[8vh]">
                     
                     {/* 1. Main Input Section */}
                     <div className="w-full max-w-2xl space-y-6 text-center">
@@ -74,7 +75,7 @@ export default function WorkspaceDashboardPage() {
                             value={input}
                             onChange={(e) => setInput(e.target.value)}
                             onKeyDown={handleKeyDown}
-                            placeholder={hasDocuments ? "Ask a question..." : "Upload documents in the sidebar to start..."}
+                            placeholder={hasDocuments ? "Ask a question..." : "Upload documents to start..."}
                             className="min-h-[120px] resize-none pr-12 text-lg p-6 rounded-xl border-muted-foreground/20 focus-visible:ring-primary/30"
                             disabled={!hasDocuments || isSubmitting || isLoadingDocs}
                             />
@@ -91,7 +92,7 @@ export default function WorkspaceDashboardPage() {
                         {!hasDocuments && !isLoadingDocs && (
                             <div className="flex items-center gap-2 justify-center text-sm text-amber-600 bg-amber-50 p-3 rounded-lg border border-amber-100">
                                 <Sparkles className="h-4 w-4" />
-                                <span>Please upload documents using the sidebar on the right.</span>
+                                <span>Please upload documents below to start.</span>
                             </div>
                         )}
                     </div>
@@ -99,12 +100,12 @@ export default function WorkspaceDashboardPage() {
                     {/* 2. Recent Conversations */}
                     <RecentConversations workspaceId={workspaceId} />
 
+                    {/* 3. Documents Panel (New) */}
+                    <WorkspaceDocumentsPanel workspaceId={workspaceId} />
+
                 </div>
             </ScrollArea>
         </div>
-
-        {/* Right Sidebar: Documents */}
-        <DocumentSidebar workspaceId={workspaceId} className="w-[300px] hidden md:flex border-l bg-muted/10" />
     </div>
   );
 }

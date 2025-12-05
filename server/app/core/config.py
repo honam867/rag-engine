@@ -80,12 +80,27 @@ class RagSettings(BaseSettings):
     embedding_model: str = "text-embedding-3-large"
 
 
+class RedisSettings(BaseSettings):
+    """Settings for Redis Event Bus (Phase 6)."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="REDIS_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # Full Redis URL, e.g. redis://localhost:6379/0
+    url: str = "redis://localhost:6379/0"
+
+
 class Settings(BaseSettings):
     database: DatabaseSettings = DatabaseSettings()  # type: ignore[call-arg]
     r2: R2Settings = R2Settings()  # type: ignore[call-arg]
     auth: AuthSettings = AuthSettings()  # type: ignore[call-arg]
     docai: DocumentAISettings = DocumentAISettings()  # type: ignore[call-arg]
     rag: RagSettings = RagSettings()  # type: ignore[call-arg]
+    redis: RedisSettings = RedisSettings()  # type: ignore[call-arg]
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 

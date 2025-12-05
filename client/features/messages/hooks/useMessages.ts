@@ -1,6 +1,6 @@
 "use client";
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { fetchMessages, sendMessage, type MessageCreatePayload, type Message } from "../api/messages";
 import { conversationKeys } from "@/lib/query-keys";
 
@@ -9,6 +9,7 @@ export function useMessageList(conversationId: string) {
     queryKey: conversationKeys.messages(conversationId),
     queryFn: () => fetchMessages(conversationId),
     enabled: Boolean(conversationId),
+    placeholderData: keepPreviousData, 
   });
 }
 
@@ -34,6 +35,7 @@ export function useSendMessage(conversationId: string) {
         content: newMsgPayload.content,
         status: "done", // User message is implicitly done
         created_at: new Date().toISOString(),
+        isOptimistic: true,
       };
 
       const optimisticAiMsg: Message = {
@@ -43,14 +45,16 @@ export function useSendMessage(conversationId: string) {
         content: "", // Empty or "Thinking..."
         status: "pending", // Important for showing spinner
         created_at: new Date().toISOString(),
+        isOptimistic: true,
       };
 
       // 4. Update cache
       queryClient.setQueryData(conversationKeys.messages(conversationId), (old: any) => {
-          const items = Array.isArray(old) ? old : old?.items || [];
-          // Adjust structure based on your actual API return (if it returns { items: [...] } or just [...])
+          // fetchMessages returns Message[], so old should be an array.
+          // If undefined, start with empty array.
+          const items = Array.isArray(old) ? old : []; 
           const newItems = [...items, optimisticUserMsg, optimisticAiMsg];
-          return Array.isArray(old) ? newItems : { ...old, items: newItems };
+          return newItems;
       });
 
       return { previousMessages };
