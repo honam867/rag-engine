@@ -16,6 +16,9 @@
   - `docs/design/architecture-overview.md` – kiến trúc tổng.
   - `docs/design/phase-*-design.md` – thiết kế kỹ thuật theo phase.
   - `docs/implement/*` – log từng lần implement feature / bugfix (theo task), dùng để tracking lịch sử triển khai.
+- **Tạo tài liệu mới**: Khi được yêu cầu tạo đặc tả hoặc thiết kế mới, hãy luôn tham khảo các template sau để đảm bảo tính nhất quán:
+  - Đặc tả (Requirements): `docs/requirements/TEMPLATE.md`
+  - Thiết kế (Design): `docs/design/TEMPLATE.md`
 - Khi làm việc:
   - Luôn đọc/refresh các file trên trước khi sửa code.
   - Nếu thực tế code khác spec → **ưu tiên spec**, nhưng phải nêu rõ sự khác biệt trong PR/commit message.

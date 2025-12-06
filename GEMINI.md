@@ -67,7 +67,7 @@ poetry run uvicorn server.app.main:app --reload --host 127.0.0.1 --port 8000
 *   **Manual API Testing:** See `TESTING.md` for `curl` commands.
 
 ### Implementation Guidelines
-*   **Documentation:** Before starting a task, review `docs/requirements` and `docs/design`.
+*   **Documentation:** Before starting a task, review `docs/requirements` and `docs/design`. When creating new requirements or design documents, always refer to `docs/requirements/TEMPLATE.md` and `docs/design/TEMPLATE.md` to ensure consistency in structure and content.
 *   **Logging:** After completing a significant task, update `docs/implement/` with a new log file following the template in `docs/implement/README.md`.
 *   **Style:** Follow the existing coding style (snake_case for functions/vars, PascalCase for classes). Use Pydantic for data validation.
 *   **Database:** Use SQLAlchemy Core/Async. Do NOT use ORM relationships unless strictly necessary; prefer explicit joins or repository methods.

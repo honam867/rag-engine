@@ -23,3 +23,9 @@ export async function createWorkspace(payload: WorkspaceCreatePayload): Promise<
     body: JSON.stringify(payload),
   });
 }
+
+export async function deleteWorkspace(workspaceId: string): Promise<void> {
+  return apiFetch(API_ENDPOINTS.workspaceDetail(workspaceId), {
+    method: "DELETE",
+  });
+}
