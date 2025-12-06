@@ -8,10 +8,18 @@ from __future__ import annotations
 
 import asyncio
 
+import sqlalchemy as sa
+
 from server.app.core.config import get_settings
+from server.app.core.constants import (
+    DOCUMENT_STATUS_ERROR,
+    PARSE_JOB_STATUS_FAILED,
+    PARSE_JOB_STATUS_QUEUED,
+)
+from server.app.core.event_bus import event_bus
 from server.app.core.logging import get_logger, setup_logging
 from server.app.core.redis_client import get_redis
-from server.app.db import repositories as repo
+from server.app.db import models, repositories as repo
 from server.app.db.session import async_session
 from server.app.services.docai_client import DocumentAIClient
 from server.app.services.parser_pipeline import ParserPipelineService
@@ -53,7 +61,8 @@ async def run_worker_loop() -> None:
     idle_sleep_seconds = 5
     busy_sleep_seconds = 1
 
-    # On startup, attempt to heal stale running parse_jobs so they can be retried.
+    # On startup, attempt to heal stale running parse_jobs so they can be retried
+    # hoặc đánh dấu failed + gửi realtime đầy đủ để client không phải reload.
     try:
         async with async_session() as session:  # type: ignore[call-arg]
             stale_threshold_seconds = 600  # 10 minutes
@@ -68,8 +77,11 @@ async def run_worker_loop() -> None:
                 )
             for job in jobs:
                 job_id = str(job["id"])
+                document_id = str(job["document_id"])
                 retry_count = int(job.get("retry_count", 0) or 0)
                 max_retries = 3
+
+                # 1) Cập nhật trạng thái job/document trong DB.
                 if retry_count < max_retries:
                     await repo.requeue_parse_job(
                         session=session,
@@ -77,12 +89,82 @@ async def run_worker_loop() -> None:
                         retry_count=retry_count + 1,
                         error_message="stale-running",
                     )
+                    new_status = PARSE_JOB_STATUS_QUEUED
+                    new_retry = retry_count + 1
+                    final_failure = False
                 else:
                     await repo.mark_parse_job_failed(
                         session=session,
                         job_id=job_id,
                         error_message="stale-running",
                     )
+                    # Đảm bảo document không bị kẹt ở pending mãi.
+                    try:
+                        await repo.update_document_parse_error(
+                            session=session,
+                            document_id=document_id,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "Failed to mark document parse error for stale parse_job",
+                            extra={"job_id": job_id, "document_id": document_id, "error": str(exc)},
+                        )
+                    new_status = PARSE_JOB_STATUS_FAILED
+                    new_retry = retry_count
+                    final_failure = True
+
+                # 2) Best-effort realtime: job.status_updated (+ document.status_updated nếu final_failure).
+                workspace_id: str | None = None
+                user_id: str | None = None
+                try:
+                    doc_stmt = (
+                        sa.select(models.documents.c.workspace_id)
+                        .where(models.documents.c.id == document_id)
+                        .limit(1)
+                    )
+                    doc_result = await session.execute(doc_stmt)
+                    doc_row = doc_result.fetchone()
+                    if doc_row:
+                        workspace_id = str(doc_row[0])
+                        user_id = await repo.get_workspace_owner_id(
+                            session, workspace_id=workspace_id
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Failed to resolve workspace/user for stale parse_job",
+                        extra={"job_id": job_id, "document_id": document_id, "error": str(exc)},
+                    )
+
+                if workspace_id and user_id:
+                    try:
+                        await event_bus.publish(
+                            user_id,
+                            "job.status_updated",
+                            {
+                                "job_id": job_id,
+                                "job_type": "parse",
+                                "workspace_id": workspace_id,
+                                "document_id": document_id,
+                                "status": new_status,
+                                "retry_count": new_retry,
+                                "error_message": "stale-running",
+                            },
+                        )
+                        if final_failure:
+                            await event_bus.publish(
+                                user_id,
+                                "document.status_updated",
+                                {
+                                    "workspace_id": workspace_id,
+                                    "document_id": document_id,
+                                    "status": DOCUMENT_STATUS_ERROR,
+                                },
+                            )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "Failed to publish realtime events for stale parse_job",
+                            extra={"job_id": job_id, "error": str(exc)},
+                        )
     except Exception as exc:  # noqa: BLE001
         logger.error("Failed to heal stale parse_jobs on startup", extra={"error": str(exc)})
 

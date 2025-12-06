@@ -29,7 +29,7 @@ from server.app.core.logging import get_logger
 from server.app.core.event_bus import event_bus
 from server.app.db import models, repositories as repo
 from server.app.services import storage_r2
-from server.app.services.docai_client import DocumentAIClient
+from server.app.services.docai_client import DocumentAIClient, PermanentDocumentAIError
 
 
 class ParserPipelineService:
@@ -157,6 +157,43 @@ class ParserPipelineService:
                     )
                 except Exception:  # noqa: BLE001
                     pass
+        except PermanentDocumentAIError as exc:
+            # Non-retryable error from Document AI (e.g. page limit exceeded).
+            self._logger.error(
+                "parse_job processing failed permanently",
+                extra={"job_id": job_id, "document_id": document_id, "error": str(exc)},
+            )
+            async with self._session_factory() as session:  # type: ignore[call-arg]
+                await repo.mark_parse_job_failed(session=session, job_id=job_id, error_message=str(exc))
+                await repo.update_document_parse_error(session=session, document_id=document_id)
+
+            if user_id:
+                try:
+                    await event_bus.publish(
+                        user_id,
+                        "job.status_updated",
+                        {
+                            "job_id": job_id,
+                            "job_type": "parse",
+                            "workspace_id": workspace_id,
+                            "document_id": document_id,
+                            "status": PARSE_JOB_STATUS_FAILED,
+                            "retry_count": retry_count,
+                            "error_message": str(exc),
+                        },
+                    )
+                    await event_bus.publish(
+                        user_id,
+                        "document.status_updated",
+                        {
+                            "workspace_id": workspace_id,
+                            "document_id": document_id,
+                            "status": DOCUMENT_STATUS_ERROR,
+                        },
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+
         except Exception as exc:  # noqa: BLE001
             self._logger.error(
                 "parse_job processing failed",
