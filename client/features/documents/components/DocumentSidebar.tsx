@@ -8,6 +8,7 @@ import { useWorkspaceDocuments, useUploadDocuments, useDeleteDocument } from "..
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { DeleteConfirmDialog } from "@/components/ui/delete-confirm-dialog";
+import { useRouter, usePathname, useSearchParams } from "next/navigation";
 
 interface DocumentSidebarProps {
   workspaceId: string;
@@ -21,6 +22,17 @@ export function DocumentSidebar({ workspaceId, className }: DocumentSidebarProps
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
+  
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
+  const handleDocumentClick = (docId: string) => {
+    // Preserve existing params (like initialPrompt if any)
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("documentId", docId);
+    router.replace(`${pathname}?${params.toString()}`);
+  };
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
@@ -52,12 +64,10 @@ export function DocumentSidebar({ workspaceId, className }: DocumentSidebarProps
       case "ingested":
       case "completed":
         return <CheckCircle className="h-4 w-4 text-green-500" />;
-      case "parsed":
-        return <ScanText className="h-4 w-4 text-blue-500" />;
       case "error":
         return <AlertCircle className="h-4 w-4 text-destructive" />;
-      default: // pending
-        return <Clock className="h-4 w-4 text-muted-foreground animate-pulse" />;
+      default: 
+        return <Loader2 className="h-4 w-4 text-muted-foreground animate-spin" />;
     }
   };
 
@@ -81,11 +91,17 @@ export function DocumentSidebar({ workspaceId, className }: DocumentSidebarProps
              </div>
           )}
 
-          {documents?.map((doc) => (
+          {documents?.map((doc) => {
+             const isActive = searchParams.get("documentId") === doc.id;
+             return (
              <div 
                 key={doc.id} 
-                className="group relative w-full flex items-center justify-between p-2 pr-9 rounded-md hover:bg-accent hover:text-accent-foreground transition-colors border border-transparent hover:border-border cursor-default"
+                className={cn(
+                    "group relative w-full flex items-center justify-between p-2 pr-9 rounded-md transition-colors border cursor-pointer",
+                    isActive ? "bg-accent text-accent-foreground border-border" : "hover:bg-accent hover:text-accent-foreground border-transparent hover:border-border"
+                )}
                 title={`${doc.title} - ${doc.status}`}
+                onClick={() => handleDocumentClick(doc.id)}
              >
                 <div className="flex items-center gap-2 overflow-hidden w-full min-w-0">
                     <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -109,7 +125,8 @@ export function DocumentSidebar({ workspaceId, className }: DocumentSidebarProps
                     <span className="sr-only">Delete</span>
                 </Button>
              </div>
-          ))}
+             );
+          })}
 
           {/* Upload Button as List Item */}
           <div className="pt-2">

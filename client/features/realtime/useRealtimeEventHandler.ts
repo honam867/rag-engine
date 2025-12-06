@@ -59,7 +59,7 @@ export function useRealtimeEventHandler() {
         // --- MESSAGES ---
         case 'message.created':
         case 'message.status_updated': {
-            const { conversation_id, message, workspace_id, status } = payload;
+            const { conversation_id, message, workspace_id, status, content, metadata } = payload;
             
             // 1. Update Cache (for all cases)
             queryClient.setQueryData(conversationKeys.messages(conversation_id), (oldData: any) => {
@@ -70,10 +70,10 @@ export function useRealtimeEventHandler() {
                 if (type === 'message.status_updated') {
                     const existingIndex = newItems.findIndex((m: any) => m.id === payload.message_id);
                     if (existingIndex > -1) {
-                        newItems[existingIndex] = { ...newItems[existingIndex], status };
-                        if (payload.content) {
-                            newItems[existingIndex].content = payload.content;
-                        }
+                        const updatedMsg = { ...newItems[existingIndex], status };
+                        if (content !== undefined) updatedMsg.content = content;
+                        if (metadata !== undefined) updatedMsg.metadata = metadata;
+                        newItems[existingIndex] = updatedMsg;
                     }
                     return newItems;
                 }

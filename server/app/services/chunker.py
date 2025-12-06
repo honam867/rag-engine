@@ -15,6 +15,83 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from server.app.core.logging import get_logger
 from server.app.db import models
 
+
+def chunk_full_text_to_segments(full_text: str, max_chunk_chars: int = 1500) -> List[dict]:
+    """Split a full OCR text into logical segments.
+
+    This helper is shared between the ingestion pipeline (content_list)
+    and the raw-text viewer API so that segmentation is consistent.
+
+    Heuristics (v2, Phase 7):
+    - Ưu tiên giữ ranh giới đoạn theo "blank line" (`\\n\\n`) nếu có.
+    - Nếu tài liệu hầu như không có `\\n\\n`, fallback lần lượt:
+      - Tách theo dòng đơn (`\\n`) rồi gộp lại theo max_chunk_chars.
+      - Nếu vẫn chỉ còn một khối dài, chia theo fixed-size window dựa trên
+        độ dài ký tự để tránh chỉ có 1 segment cho toàn bộ văn bản.
+    """
+    full_text = (full_text or "").strip()
+    segments: List[dict] = []
+    if not full_text:
+        return segments
+
+    chunks: List[str] = []
+
+    def _flush_current(buf: list[str]) -> None:
+        if not buf:
+            return
+        chunks.append("\n".join(buf))
+        buf.clear()
+
+    # Step 1: try split by blank lines (paragraphs separated by \n\n).
+    paragraphs = [p for p in full_text.split("\n\n") if p.strip()]
+    if len(paragraphs) <= 1:
+        # Fallback: split by single newlines to get shorter units.
+        paragraphs = [p for p in full_text.split("\n") if p.strip()]
+    if not paragraphs:
+        paragraphs = [full_text]
+
+    current: list[str] = []
+    current_len = 0
+    for para in paragraphs:
+        para = para.strip()
+        if not para:
+            continue
+        # Nếu đoạn hiện tại + para mới vượt quá max_chunk_chars,
+        # flush đoạn hiện tại trước khi thêm para mới.
+        if current and current_len + len(para) + 1 > max_chunk_chars:
+            _flush_current(current)
+            current_len = 0
+        current.append(para)
+        current_len += len(para) + 1
+
+    _flush_current(current)
+
+    # Step 2: nếu vì lý do nào đó vẫn chỉ có 1 chunk rất dài,
+    # chia thêm theo fixed-size window để tránh chỉ 1 segment cho cả document.
+    if len(chunks) == 1 and len(chunks[0]) > max_chunk_chars:
+        text = chunks[0]
+        chunks = []
+        start = 0
+        text_len = len(text)
+        while start < text_len:
+            end = min(start + max_chunk_chars, text_len)
+            chunks.append(text[start:end].strip())
+            start = end
+
+    for idx, chunk in enumerate(chunks):
+        segments.append(
+            {
+                "segment_index": idx,
+                # Phase 7 v1: page information is not yet mapped,
+                # so we keep 0 as a placeholder.
+                "page_idx": 0,
+                "text": chunk,
+            }
+        )
+
+    return segments
+
+
 class ChunkerService:
     """Service responsible for turning documents into content_list."""
 
@@ -55,45 +132,14 @@ class ChunkerService:
         workspace_id = str(document["workspace_id"])
         original_filename = str(file["original_filename"])
 
-        # Simple V1 chunking strategy: split by paragraphs and fall back to fixed-size chunks.
-        chunks: List[str] = []
-        current: list[str] = []
-        current_len = 0
-        max_chunk_chars = 1500
-
-        # Prefer paragraph boundaries (double newline) when present.
-        paragraphs = [p for p in full_text.split("\n\n") if p.strip()]
-        if len(paragraphs) == 1:
-            # If there are no clear paragraphs, fall back to single string chunking.
-            paragraphs = [full_text]
-
-        for para in paragraphs:
-            para = para.strip()
-            if not para:
-                continue
-            # If adding this paragraph would exceed the limit, flush current chunk.
-            if current and current_len + len(para) + 1 > max_chunk_chars:
-                chunks.append("\n\n".join(current))
-                current = []
-                current_len = 0
-            current.append(para)
-            current_len += len(para) + 2  # account for separators
-
-        if current:
-            chunks.append("\n\n".join(current))
-
-        if not chunks:
-            # Fallback: use the whole text as a single chunk.
-            chunks = [full_text]
-
         content_list: List[dict] = []
-        for chunk in chunks:
+        segments = chunk_full_text_to_segments(full_text)
+        for seg in segments:
             content_list.append(
                 {
                     "type": "text",
-                    "text": chunk,
-                    # Phase 3 v1: we do not yet map precise pages; use 0 as placeholder.
-                    "page_idx": 0,
+                    "text": seg["text"],
+                    "page_idx": seg["page_idx"],
                 }
             )
 

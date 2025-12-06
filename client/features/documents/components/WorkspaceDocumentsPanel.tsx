@@ -53,12 +53,10 @@ export function WorkspaceDocumentsPanel({ workspaceId }: Props) {
       case "ingested":
       case "completed":
         return { icon: CheckCircle, color: "text-green-500", bg: "bg-green-500/10", label: "Ready" };
-      case "parsed":
-        return { icon: ScanText, color: "text-blue-500", bg: "bg-blue-500/10", label: "Parsed" };
       case "error":
         return { icon: AlertCircle, color: "text-destructive", bg: "bg-destructive/10", label: "Error" };
-      default: // pending, running
-        return { icon: Clock, color: "text-amber-500", bg: "bg-amber-500/10", label: "Processing" };
+      default: // pending, running, parsed
+        return { icon: Loader2, color: "text-muted-foreground animate-spin", bg: "bg-muted/10", label: "Processing" };
     }
   };
 

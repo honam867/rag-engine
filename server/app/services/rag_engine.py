@@ -235,7 +235,7 @@ class RagEngineService:
         system_prompt: Optional[str] = None,
         mode: str = "mix",
     ) -> Dict[str, Any]:
-        """Query RAG for a workspace and return answer + citations.
+        """Query RAG for a workspace and return answer + sections.
 
         If the underlying LLM/embedding configuration is missing (e.g. no
         OPENAI_API_KEY), this will return a graceful fallback answer instead
@@ -253,7 +253,7 @@ class RagEngineService:
                     "Xin lỗi, engine RAG chưa được cấu hình LLM (OPENAI_API_KEY) nên hiện tại mình "
                     "chưa thể trả lời dựa trên tài liệu. Bạn hãy cấu hình khóa API trước rồi thử lại nhé."
                 ),
-                "citations": [],
+                "sections": [],
             }
         rag = self._get_rag_instance(workspace_id)
 
@@ -278,15 +278,21 @@ class RagEngineService:
             raise RuntimeError(f"Failed to initialize RAG engine for workspace {workspace_id}")
 
         # Merge caller-provided system prompt (if any) with the default persona,
-        # and add a light instruction to prefer JSON output when possible so we
-        # can extract citations in a structured way.
+        # và thêm hướng dẫn trả JSON để backend có thể trích xuất sections.
         base_prompt = system_prompt or RAG_DEFAULT_SYSTEM_PROMPT
         effective_system_prompt = (
             base_prompt
             + "\n\n"
-            + "Khi có thể, hãy trả về JSON với cấu trúc:\n"
-            + '{ "answer": "<câu trả lời>", "citations": [] }\n'
-            + "Nếu không đáp ứng được, vẫn có thể trả lời bình thường."
+            + "Khi có thể, hãy trả về **DUY NHẤT** một JSON hợp lệ với cấu trúc đơn giản sau:\n"
+            + '{\n'
+            + '  "sections": [\n'
+            + '    { "text": "<đoạn trả lời 1>" },\n'
+            + '    { "text": "<đoạn trả lời 2>" }\n'
+            + "  ]\n"
+            + "}\n\n"
+            + "- Không cần tự chèn thông tin document_id, segment_index hay citations vào JSON.\n"
+            + "- Nếu không thể tuân thủ hoàn toàn, vẫn trả JSON gần đúng nhất có thể.\n"
+            + "- Nếu hoàn toàn không thể trả JSON, trả lời bình thường dưới dạng text."
         )
 
         query_mode = mode or self.settings.query_mode
@@ -314,29 +320,36 @@ class RagEngineService:
         )
 
         answer: str = raw_result
-        citations: List[Dict[str, Any]] = []
+        sections: List[Dict[str, Any]] = []
 
         # Best-effort: if the model followed the JSON instruction, parse it.
         try:
             parsed = json.loads(raw_result)
-            if isinstance(parsed, dict) and "answer" in parsed:
-                answer = str(parsed.get("answer", ""))
-                raw_citations = parsed.get("citations") or []
-                if isinstance(raw_citations, list):
-                    # We don't enforce a strict schema here; the API layer can
-                    # treat these as opaque metadata.
-                    citations = [c for c in raw_citations if isinstance(c, dict)]
+            if isinstance(parsed, dict) and "sections" in parsed:
+                raw_sections = parsed.get("sections") or []
+                if isinstance(raw_sections, list):
+                    for sec in raw_sections:
+                        if not isinstance(sec, dict):
+                            continue
+                        text_val = sec.get("text")
+                        if not isinstance(text_val, str):
+                            continue
+                        sections.append({"text": text_val})
+
+                if sections:
+                    # Build answer text by joining section texts with double newlines.
+                    answer = "\n\n".join(str(sec["text"]) for sec in sections)
         except (json.JSONDecodeError, TypeError):
             # Model returned plain text; treat entire result as answer.
             logger.debug("RAG query result is not valid JSON; using raw text as answer.")
 
         logger.info(
-            "RAG query completed for workspace=%s (citations=%d)",
+            "RAG query completed for workspace=%s (sections=%d)",
             workspace_id,
-            len(citations),
+            len(sections),
         )
 
-        return {"answer": answer, "citations": citations}
+        return {"answer": answer, "sections": sections}
 
     async def delete_document(self, workspace_id: str, rag_doc_id: str) -> None:
         """Delete a document from RAG storage."""

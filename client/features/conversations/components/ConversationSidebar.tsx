@@ -43,11 +43,11 @@ export function ConversationSidebar() {
   if (!workspaceId) return null;
 
   return (
-    <div className="hidden w-[300px] flex-col border-l bg-muted/10 md:flex h-full">
+    <div className="hidden w-[300px] flex-col border-l bg-muted/10 md:flex h-full shrink-0">
       
       {/* Top Half: Conversations */}
       <div className="flex flex-col h-1/2 min-h-0 border-b">
-          <div className="flex h-14 items-center border-b px-4 font-semibold shrink-0">
+          <div className="flex h-14 items-center border-b px-4 font-semibold shrink-0 bg-muted/20">
             Conversations
           </div>
           <ScrollArea className="flex-1">
@@ -63,24 +63,24 @@ export function ConversationSidebar() {
               {conversations?.map((conv) => {
                 const isActive = pathname.includes(`/conversations/${conv.id}`);
                 return (
-                  <div key={conv.id} className="group relative w-full flex items-center pr-9 rounded-md hover:bg-accent hover:text-accent-foreground transition-colors">
+                  <div key={conv.id} className="group relative w-full flex items-center pr-9 rounded-md hover:bg-accent hover:text-accent-foreground transition-colors min-w-0">
                     <Link
                         href={`/workspaces/${workspaceId}/conversations/${conv.id}`}
                         className={cn(
                         "flex-1 flex items-center gap-2 py-2 pl-3 text-sm font-medium min-w-0 overflow-hidden",
-                        isActive ? "text-accent-foreground" : "text-muted-foreground"
+                        isActive ? "text-accent-foreground font-semibold" : "text-muted-foreground"
                         )}
                         title={conv.title || "Untitled Conversation"}
                     >
                         <MessageSquare className="h-4 w-4 shrink-0" />
-                        <div className="truncate">{conv.title || "Untitled Conversation"}</div>
+                        <span className="truncate flex-1 min-w-0">{conv.title || "Untitled Conversation"}</span>
                     </Link>
 
-                    {/* Delete Button (Visible on Hover) */}
+                    {/* Delete Button */}
                     <Button
                         variant="ghost"
                         size="icon"
-                        className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 invisible group-hover:visible text-muted-foreground hover:text-destructive hover:bg-destructive/10 z-10"
+                        className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive hover:bg-destructive/10 z-20"
                         onClick={(e) => {
                             e.preventDefault();
                             e.stopPropagation();

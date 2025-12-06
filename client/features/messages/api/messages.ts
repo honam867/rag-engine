@@ -1,13 +1,31 @@
 import { API_ENDPOINTS } from "@/lib/api-endpoints";
 import { apiFetch } from "@/lib/api-client";
 
+export interface Citation {
+  document_id: string;
+  segment_index: number;
+  page_idx?: number;
+  snippet_preview?: string;
+}
+
+export interface MessageSection {
+  text: string;
+  citations: Citation[];
+}
+
+export interface MessageMetadata {
+  sections?: MessageSection[];
+  citations?: Citation[];
+  [key: string]: unknown;
+}
+
 export interface Message {
   id: string;
-  conversation_id?: string; // Optional because API might not always return it in list, but used in websocket/optimistic
+  conversation_id?: string;
   role: string;
   content: string;
-  status?: string; // 'pending' | 'running' | 'done' | 'error'
-  metadata?: Record<string, unknown> | null;
+  status?: string;
+  metadata?: MessageMetadata | null;
   created_at?: string;
   isOptimistic?: boolean;
 }

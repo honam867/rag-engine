@@ -4,7 +4,12 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from server.app.core.constants import DOCUMENT_STATUS_PENDING, PARSE_JOB_STATUS_QUEUED
+from server.app.core.constants import (
+    DOCUMENT_STATUS_INGESTED,
+    DOCUMENT_STATUS_PARSED,
+    DOCUMENT_STATUS_PENDING,
+    PARSE_JOB_STATUS_QUEUED,
+)
 from server.app.core.event_bus import notify_parse_job_created
 from server.app.core.realtime import send_event_to_user
 from server.app.core.security import CurrentUser, get_current_user
@@ -14,10 +19,13 @@ from server.app.schemas.documents import (
     Document,
     DocumentDetail,
     DocumentListResponse,
+    DocumentRawTextResponse,
+    DocumentSegment,
     ParseJobInfo,
     UploadResponse,
     UploadResponseItem,
 )
+from server.app.services.chunker import chunk_full_text_to_segments
 from server.app.services.rag_engine import RagEngineService
 from server.app.services import storage_r2
 from server.app.utils.ids import new_uuid
@@ -150,6 +158,51 @@ async def get_document_detail(
         parse_job = ParseJobInfo.model_validate(parse_job_row)
 
     return DocumentDetail(document=_to_document(doc_row), parse_job=parse_job)
+
+
+@router.get("/{document_id}/raw-text", response_model=DocumentRawTextResponse)
+async def get_document_raw_text(
+    workspace_id: str,
+    document_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> DocumentRawTextResponse:
+    """Return OCR'ed raw text of a document as segments for viewer."""
+    await _ensure_workspace(session, workspace_id, current_user.id)
+    doc_row = await repo.get_document(session, document_id=document_id, workspace_id=workspace_id)
+    if not doc_row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    status_value = doc_row.get("status")
+    if status_value not in {DOCUMENT_STATUS_PARSED, DOCUMENT_STATUS_INGESTED}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Document is not parsed yet",
+        )
+
+    full_text = (doc_row.get("docai_full_text") or "").strip()
+    if not full_text:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Document has no OCR text (docai_full_text is empty)",
+        )
+
+    segments_data = chunk_full_text_to_segments(full_text)
+    segments: list[DocumentSegment] = [
+        DocumentSegment(
+            segment_index=int(seg["segment_index"]),
+            page_idx=int(seg.get("page_idx", 0)),
+            text=str(seg["text"]),
+        )
+        for seg in segments_data
+    ]
+
+    return DocumentRawTextResponse(
+        document_id=doc_row["id"],
+        workspace_id=doc_row["workspace_id"],
+        status=status_value,
+        segments=segments,
+    )
 
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)

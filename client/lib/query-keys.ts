@@ -6,6 +6,7 @@ export const workspaceKeys = {
 
 export const documentKeys = {
   list: (workspaceId: string) => ["documents", "list", workspaceId] as const,
+  rawText: (workspaceId: string, documentId: string) => ["documents", "rawText", workspaceId, documentId] as const,
 };
 
 export const conversationKeys = {

@@ -1,10 +1,13 @@
-from typing import Any
+from typing import Any, Dict, List, Tuple
 import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, status
+import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.app.core.constants import (
+    DOCUMENT_STATUS_INGESTED,
+    DOCUMENT_STATUS_PARSED,
     MESSAGE_STATUS_DONE,
     MESSAGE_STATUS_ERROR,
     MESSAGE_STATUS_PENDING,
@@ -15,9 +18,10 @@ from server.app.core.constants import (
 from server.app.core.config import get_settings
 from server.app.core.realtime import send_event_to_user
 from server.app.core.security import CurrentUser, get_current_user
-from server.app.db import repositories as repo
+from server.app.db import models, repositories as repo
 from server.app.db.session import get_db_session, async_session
 from server.app.schemas.conversations import Message, MessageCreate, MessageListResponse
+from server.app.services.chunker import chunk_full_text_to_segments
 from server.app.services.rag_engine import RagEngineService
 
 router = APIRouter(prefix="/api/conversations/{conversation_id}/messages")
@@ -32,6 +36,130 @@ async def _ensure_conversation(session: AsyncSession, conversation_id: str, user
     if not conv:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     return conv
+
+
+def _compute_similarity(a: str, b: str) -> float:
+    """Very simple similarity score between two strings (0.0–1.0).
+
+    For Phase 7 we keep this cheap: compare lowercased texts using a
+    ratio of common characters over max length. This is not perfect,
+    but good enough to pick a representative source segment.
+    """
+    a_norm = (a or "").strip().lower()
+    b_norm = (b or "").strip().lower()
+    if not a_norm or not b_norm:
+        return 0.0
+    # Limit length to avoid quadratic blowup on very long texts.
+    max_len = 800
+    a_norm = a_norm[:max_len]
+    b_norm = b_norm[:max_len]
+
+    # Simple bag-of-characters overlap.
+    set_a = set(a_norm)
+    set_b = set(b_norm)
+    if not set_a or not set_b:
+        return 0.0
+    common = len(set_a & set_b)
+    denom = max(len(set_a), len(set_b))
+    return common / denom
+
+
+async def _build_citations_for_sections(
+    workspace_id: str,
+    sections: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Build citations for each section by matching against document segments.
+
+    This function:
+    - Loads parsed/ingested documents in the workspace.
+    - Chunks `docai_full_text` into segments per document.
+    - For each section, finds the best matching segment(s) and returns
+      structured citations with real document_id + segment_index.
+    """
+    if not sections:
+        return [], []
+
+    # Step 1: load documents with OCR text for this workspace.
+    async with async_session() as session:  # type: ignore[call-arg]
+        assert isinstance(session, AsyncSession)
+        stmt = (
+            sa.select(
+                models.documents.c.id,
+                models.documents.c.docai_full_text,
+                models.documents.c.status,
+            )
+            .where(
+                models.documents.c.workspace_id == workspace_id,
+                models.documents.c.status.in_([DOCUMENT_STATUS_PARSED, DOCUMENT_STATUS_INGESTED]),
+                models.documents.c.docai_full_text.is_not(None),
+            )
+        )
+        result = await session.execute(stmt)
+        doc_rows = result.fetchall()
+
+    all_segments: List[Tuple[str, int, int, str]] = []  # (doc_id, segment_index, page_idx, text)
+    for row in doc_rows:
+        doc_id = str(row[0])
+        full_text = (row[1] or "").strip()
+        if not full_text:
+            continue
+        segments = chunk_full_text_to_segments(full_text)
+        for seg in segments:
+            all_segments.append(
+                (
+                    doc_id,
+                    int(seg["segment_index"]),
+                    int(seg.get("page_idx", 0)),
+                    str(seg["text"]),
+                )
+            )
+
+    if not all_segments:
+        # No OCR text available; cannot build citations.
+        return sections, []
+
+    sections_with_citations: List[Dict[str, Any]] = []
+    citations_flat: List[Dict[str, Any]] = []
+
+    # Step 2: for mỗi section, tìm 1–N segment phù hợp nhất.
+    for sec in sections:
+        text_val = str(sec.get("text") or "").strip()
+        if not text_val:
+            sections_with_citations.append({**sec, "citations": []})
+            continue
+
+        # Giới hạn độ dài text để so khớp (tránh quá nặng).
+        max_len = 800
+        text_for_match = text_val[:max_len]
+
+        best_score = 0.0
+        best_segment: Tuple[str, int, int, str] | None = None
+
+        for doc_id, seg_idx, page_idx, seg_text in all_segments:
+            score = _compute_similarity(text_for_match, seg_text)
+            if score > best_score:
+                best_score = score
+                best_segment = (doc_id, seg_idx, page_idx, seg_text)
+
+        citations_for_section: List[Dict[str, Any]] = []
+        # Ngưỡng tối thiểu để chấp nhận citation.
+        if best_segment and best_score >= 0.3:
+            doc_id, seg_idx, page_idx, seg_text = best_segment
+            snippet = seg_text.strip()
+            if len(snippet) > 200:
+                snippet = snippet[:200] + "..."
+            citation = {
+                "document_id": doc_id,
+                "segment_index": seg_idx,
+                "page_idx": page_idx,
+                "snippet_preview": snippet,
+            }
+            citations_for_section.append(citation)
+            citations_flat.append(citation)
+
+        sections_with_citations.append({**sec, "citations": citations_for_section})
+
+    return sections_with_citations, citations_flat
 
 
 async def _process_ai_message_background(
@@ -53,7 +181,19 @@ async def _process_ai_message_background(
             mode=settings.rag.query_mode,
         )
         answer = rag_result.get("answer") or ""
-        citations = rag_result.get("citations") or []
+        raw_sections = rag_result.get("sections") or []
+
+        # Build citations for each section using server-side text matching.
+        sections_with_citations, citations_flat = await _build_citations_for_sections(
+            workspace_id=workspace_id,
+            sections=list(raw_sections),
+        )
+
+        metadata: dict[str, Any] = {}
+        if sections_with_citations:
+            metadata["sections"] = sections_with_citations
+        if citations_flat:
+            metadata["citations"] = citations_flat
 
         # Update AI message as done in a fresh DB session.
         async with async_session() as bg_session:  # type: ignore[call-arg]
@@ -62,7 +202,7 @@ async def _process_ai_message_background(
                 message_id=ai_message_id,
                 content=answer or "Xin lỗi, hiện tại mình không thể trả lời câu hỏi này.",
                 status=MESSAGE_STATUS_DONE,
-                metadata={"citations": citations} if citations else {},
+                metadata=metadata or None,
             )
 
         # Realtime event: AI message done.
@@ -76,6 +216,7 @@ async def _process_ai_message_background(
                     "message_id": ai_message_id,
                     "status": MESSAGE_STATUS_DONE,
                     "content": updated_ai_msg.get("content") or answer,
+                    "metadata": updated_ai_msg.get("metadata") or metadata or None,
                 },
             )
         except Exception:

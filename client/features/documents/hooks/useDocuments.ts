@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { fetchDocuments, uploadDocuments, deleteDocument } from "../api/documents";
+import { fetchDocuments, uploadDocuments, deleteDocument, fetchDocumentRawText } from "../api/documents";
 import { documentKeys } from "@/lib/query-keys";
 
 export function useWorkspaceDocuments(workspaceId: string) {
@@ -10,6 +10,15 @@ export function useWorkspaceDocuments(workspaceId: string) {
     queryKey: documentKeys.list(workspaceId),
     queryFn: () => fetchDocuments(workspaceId),
     enabled: Boolean(workspaceId),
+  });
+}
+
+export function useDocumentRawText(workspaceId: string, documentId: string | null) {
+  return useQuery({
+    queryKey: documentKeys.rawText(workspaceId, documentId!),
+    queryFn: () => fetchDocumentRawText(workspaceId, documentId!),
+    enabled: Boolean(workspaceId) && Boolean(documentId),
+    retry: 1, // Don't retry too much on 404/409
   });
 }
 

@@ -12,6 +12,19 @@ export interface DocumentListResponse {
   items: Document[];
 }
 
+export interface DocumentSegment {
+  segment_index: number;
+  page_idx: number;
+  text: string;
+}
+
+export interface DocumentRawTextResponse {
+  document_id: string;
+  workspace_id: string;
+  status: string;
+  segments: DocumentSegment[];
+}
+
 export async function fetchDocuments(workspaceId: string): Promise<Document[]> {
   const res = await apiFetch<DocumentListResponse>(API_ENDPOINTS.documents(workspaceId));
   return res.items;
@@ -35,4 +48,11 @@ export async function deleteDocument(workspaceId: string, documentId: string): P
   await apiFetch(url, {
     method: "DELETE",
   });
+}
+
+export async function fetchDocumentRawText(workspaceId: string, documentId: string): Promise<DocumentRawTextResponse> {
+  // Construct URL manually since API_ENDPOINTS doesn't have a helper for single doc sub-resource yet
+  // /api/workspaces/{workspaceId}/documents/{documentId}/raw-text
+  const url = `${API_ENDPOINTS.documents(workspaceId)}/${documentId}/raw-text`;
+  return apiFetch<DocumentRawTextResponse>(url);
 }
