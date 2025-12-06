@@ -1,12 +1,13 @@
 "use client";
 
-import { useRef } from "react";
-import { useWorkspaceDocuments, useUploadDocuments } from "../hooks/useDocuments";
+import { useRef, useState } from "react";
+import { useWorkspaceDocuments, useUploadDocuments, useDeleteDocument } from "../hooks/useDocuments";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { FileText, Upload, CheckCircle, AlertCircle, Clock, ScanText, Loader2 } from "lucide-react";
+import { FileText, Upload, CheckCircle, AlertCircle, Clock, ScanText, Loader2, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { DeleteConfirmDialog } from "@/components/ui/delete-confirm-dialog";
 
 interface Props {
   workspaceId: string;
@@ -15,7 +16,10 @@ interface Props {
 export function WorkspaceDocumentsPanel({ workspaceId }: Props) {
   const { data: documents, isLoading } = useWorkspaceDocuments(workspaceId);
   const { mutateAsync: upload, isPending } = useUploadDocuments(workspaceId);
+  const { mutateAsync: deleteDocument, isPending: isDeleting } = useDeleteDocument(workspaceId);
+  
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
@@ -25,11 +29,22 @@ export function WorkspaceDocumentsPanel({ workspaceId }: Props) {
       } catch (error) {
         toast.error("Failed to upload documents");
       } finally {
-        // Reset input to allow selecting same file again
         if (fileInputRef.current) {
             fileInputRef.current.value = "";
         }
       }
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!deleteId) return;
+    try {
+      await deleteDocument(deleteId);
+      toast.success("Document deleted");
+    } catch (error) {
+      toast.error("Failed to delete document");
+    } finally {
+      setDeleteId(null);
     }
   };
 
@@ -70,16 +85,30 @@ export function WorkspaceDocumentsPanel({ workspaceId }: Props) {
             return (
                 <div 
                     key={doc.id} 
-                    className="group flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-accent/50 transition-colors cursor-default"
+                    className="group relative flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-accent/50 transition-colors cursor-default"
                     title={`${doc.title} - ${status.label}`}
                 >
                     <div className="flex items-center gap-3 min-w-0 overflow-hidden flex-1">
                         <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
                         <span className="text-sm font-medium truncate pr-2">{doc.title}</span>
                     </div>
-                    <div className="shrink-0 pl-1">
+                    <div className="shrink-0 pl-1 group-hover:opacity-0 transition-opacity">
                         <StatusIcon className={cn("h-3.5 w-3.5", status.color, doc.status === 'pending' && "animate-pulse")} />
                     </div>
+                    
+                    {/* Delete Button (Visible on Hover) */}
+                    <Button
+                        variant="ghost"
+                        size="icon"
+                        className="absolute right-1 h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            setDeleteId(doc.id);
+                        }}
+                    >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        <span className="sr-only">Delete</span>
+                    </Button>
                 </div>
             );
         })}
@@ -103,6 +132,15 @@ export function WorkspaceDocumentsPanel({ workspaceId }: Props) {
               <span className="font-medium text-sm">{isPending ? "Uploading..." : "Upload New Documents"}</span>
           </div>
       </Card>
+
+      <DeleteConfirmDialog
+        open={!!deleteId}
+        onOpenChange={(open) => !open && setDeleteId(null)}
+        onConfirm={handleDelete}
+        title="Delete Document?"
+        description="This will permanently delete the document and its index. Chat responses referencing this document may become less accurate."
+        isDeleting={isDeleting}
+      />
     </div>
   );
 }

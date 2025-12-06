@@ -30,3 +30,11 @@ export async function createConversation(
     body: JSON.stringify(payload),
   });
 }
+
+export async function deleteConversation(workspaceId: string, conversationId: string): Promise<void> {
+  // Construct URL manually as above: /api/workspaces/{wid}/conversations/{cid}
+  const url = `${API_ENDPOINTS.conversations(workspaceId)}/${conversationId}`;
+  await apiFetch(url, {
+    method: "DELETE",
+  });
+}

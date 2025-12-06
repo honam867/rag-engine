@@ -1,27 +1,46 @@
 "use client";
 
-import { useWorkspacesList } from "../hooks/useWorkspaces";
+import { useWorkspacesList, useDeleteWorkspace } from "../hooks/useWorkspaces";
 import { cn } from "@/lib/utils";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { Folder, FolderPlus, Loader2, ChevronDown, ChevronRight } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
+import { Folder, FolderPlus, Loader2, ChevronDown, ChevronRight, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { CreateWorkspaceDialog } from "./CreateWorkspaceDialog";
+import { DeleteConfirmDialog } from "@/components/ui/delete-confirm-dialog";
 import { useState } from "react";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { toast } from "sonner";
+import { ROUTES } from "@/lib/routes";
 
 export function WorkspaceSidebar() {
   const { data: workspaces, isLoading } = useWorkspacesList();
+  const { mutateAsync: deleteWorkspace, isPending: isDeleting } = useDeleteWorkspace();
   const pathname = usePathname();
+  const router = useRouter();
   const [isExpanded, setIsExpanded] = useState(true);
+  
+  // Delete State
+  const [deleteId, setDeleteId] = useState<string | null>(null);
 
   const toggleExpand = () => setIsExpanded(!isExpanded);
+
+  const handleDelete = async () => {
+    if (!deleteId) return;
+    try {
+      await deleteWorkspace(deleteId);
+      toast.success("Workspace deleted");
+      
+      // If deleted workspace is active, redirect to workspaces root
+      if (pathname.startsWith(`/workspaces/${deleteId}`)) {
+        router.push(ROUTES.workspaces);
+      }
+    } catch (error) {
+      toast.error("Failed to delete workspace");
+    } finally {
+      setDeleteId(null);
+    }
+  };
 
   if (isLoading) {
     return (
@@ -68,18 +87,34 @@ export function WorkspaceSidebar() {
                     {workspaces?.map((ws) => {
                         const isActive = pathname.startsWith(`/workspaces/${ws.id}`);
                         return (
-                            <Link
-                                key={ws.id}
-                                href={`/workspaces/${ws.id}`}
-                                className={cn(
-                                    "flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground transition-colors min-w-0",
-                                    isActive ? "bg-accent text-accent-foreground" : "text-muted-foreground"
-                                )}
-                                title={ws.name}
-                            >
-                                <Folder className={cn("h-4 w-4 shrink-0", isActive ? "fill-current" : "")} />
-                                <span className="truncate pr-2">{ws.name}</span>
-                            </Link>
+                            <div key={ws.id} className="group relative w-full flex items-center pr-9 rounded-md hover:bg-accent hover:text-accent-foreground transition-colors min-w-0">
+                                <Link
+                                    href={`/workspaces/${ws.id}`}
+                                    className={cn(
+                                        "flex-1 flex items-center gap-2 py-2 pl-3 text-sm font-medium min-w-0 overflow-hidden",
+                                        isActive ? "text-accent-foreground" : "text-muted-foreground"
+                                    )}
+                                    title={ws.name}
+                                >
+                                    <Folder className={cn("h-4 w-4 shrink-0", isActive ? "fill-current" : "")} />
+                                    <span className="truncate flex-1 min-w-0">{ws.name}</span>
+                                </Link>
+                                
+                                {/* Delete Button (Visible on Hover) */}
+                                <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive hover:bg-destructive/10 z-10"
+                                    onClick={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        setDeleteId(ws.id);
+                                    }}
+                                >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                    <span className="sr-only">Delete</span>
+                                </Button>
+                            </div>
                         );
                     })}
                     
@@ -93,7 +128,14 @@ export function WorkspaceSidebar() {
         </div>
       </ScrollArea>
       
-      {/* User profile or footer could go here */}
+      <DeleteConfirmDialog
+        open={!!deleteId}
+        onOpenChange={(open) => !open && setDeleteId(null)}
+        onConfirm={handleDelete}
+        title="Delete Workspace?"
+        description="This action cannot be undone. All documents and conversations within this workspace will be permanently deleted."
+        isDeleting={isDeleting}
+      />
     </div>
   );
 }

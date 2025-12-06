@@ -27,3 +27,12 @@ export async function uploadDocuments(workspaceId: string, files: FileList): Pro
     body: form,
   });
 }
+
+export async function deleteDocument(workspaceId: string, documentId: string): Promise<void> {
+  // Assuming standard REST: /api/workspaces/{wid}/documents/{did}
+  // API_ENDPOINTS.documents(wid) returns /api/workspaces/{wid}/documents
+  const url = `${API_ENDPOINTS.documents(workspaceId)}/${documentId}`;
+  await apiFetch(url, {
+    method: "DELETE",
+  });
+}

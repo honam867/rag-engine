@@ -1,12 +1,13 @@
 "use client";
 
-import { useRef } from "react";
-import { Plus, FileText, Loader2, CheckCircle, AlertCircle, Clock, ScanText, Upload } from "lucide-react";
+import { useRef, useState } from "react";
+import { Plus, FileText, Loader2, CheckCircle, AlertCircle, Clock, ScanText, Upload, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { useWorkspaceDocuments, useUploadDocuments } from "../hooks/useDocuments";
+import { useWorkspaceDocuments, useUploadDocuments, useDeleteDocument } from "../hooks/useDocuments";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { DeleteConfirmDialog } from "@/components/ui/delete-confirm-dialog";
 
 interface DocumentSidebarProps {
   workspaceId: string;
@@ -16,7 +17,10 @@ interface DocumentSidebarProps {
 export function DocumentSidebar({ workspaceId, className }: DocumentSidebarProps) {
   const { data: documents, isLoading } = useWorkspaceDocuments(workspaceId);
   const { mutateAsync: upload, isPending } = useUploadDocuments(workspaceId);
+  const { mutateAsync: deleteDocument, isPending: isDeleting } = useDeleteDocument(workspaceId);
+  
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
@@ -28,6 +32,18 @@ export function DocumentSidebar({ workspaceId, className }: DocumentSidebarProps
       } finally {
         if (fileInputRef.current) fileInputRef.current.value = "";
       }
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!deleteId) return;
+    try {
+      await deleteDocument(deleteId);
+      toast.success("Document deleted");
+    } catch (error) {
+      toast.error("Failed to delete document");
+    } finally {
+      setDeleteId(null);
     }
   };
 
@@ -68,16 +84,30 @@ export function DocumentSidebar({ workspaceId, className }: DocumentSidebarProps
           {documents?.map((doc) => (
              <div 
                 key={doc.id} 
-                className="group flex items-center justify-between p-2 rounded-md hover:bg-accent hover:text-accent-foreground transition-colors border border-transparent hover:border-border cursor-default"
+                className="group relative w-full flex items-center justify-between p-2 pr-9 rounded-md hover:bg-accent hover:text-accent-foreground transition-colors border border-transparent hover:border-border cursor-default"
                 title={`${doc.title} - ${doc.status}`}
              >
                 <div className="flex items-center gap-2 overflow-hidden w-full min-w-0">
                     <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
-                    <span className="text-sm font-medium truncate pr-2 flex-1">{doc.title}</span>
+                    <div className="text-sm font-medium truncate flex-1">{doc.title}</div>
                 </div>
-                <div className="shrink-0 pl-1">
+                <div className="shrink-0 pl-1 group-hover:opacity-0 transition-opacity">
                     {getStatusIcon(doc.status)}
                 </div>
+
+                {/* Delete Button (Visible on Hover) */}
+                <Button
+                    variant="ghost"
+                    size="icon"
+                    className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 invisible group-hover:visible text-muted-foreground hover:text-destructive hover:bg-destructive/10 z-10"
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        setDeleteId(doc.id);
+                    }}
+                >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    <span className="sr-only">Delete</span>
+                </Button>
              </div>
           ))}
 
@@ -103,6 +133,15 @@ export function DocumentSidebar({ workspaceId, className }: DocumentSidebarProps
           </div>
         </div>
       </ScrollArea>
+
+      <DeleteConfirmDialog
+        open={!!deleteId}
+        onOpenChange={(open) => !open && setDeleteId(null)}
+        onConfirm={handleDelete}
+        title="Delete Document?"
+        description="This will permanently delete the document and its index. Chat responses referencing this document may become less accurate."
+        isDeleting={isDeleting}
+      />
     </div>
   );
 }
