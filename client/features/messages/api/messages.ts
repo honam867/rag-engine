@@ -11,6 +11,7 @@ export interface Citation {
 export interface MessageSection {
   text: string;
   citations: Citation[];
+  source_ids?: string[]; // Phase 7.2: List of raw segment IDs from LLM
 }
 
 export interface MessageMetadata {

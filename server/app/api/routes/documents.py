@@ -25,7 +25,7 @@ from server.app.schemas.documents import (
     UploadResponse,
     UploadResponseItem,
 )
-from server.app.services.chunker import chunk_full_text_to_segments
+from server.app.services.chunker import build_segments_from_docai, chunk_full_text_to_segments
 from server.app.services.rag_engine import RagEngineService
 from server.app.services import storage_r2
 from server.app.utils.ids import new_uuid
@@ -187,7 +187,21 @@ async def get_document_raw_text(
             detail="Document has no OCR text (docai_full_text is empty)",
         )
 
-    segments_data = chunk_full_text_to_segments(full_text)
+    segments_data: list[dict]
+    # Ưu tiên dùng JSON Document AI nếu có để segmentation bám sát layout PDF.
+    raw_key = doc_row.get("docai_raw_r2_key")
+    if raw_key:
+        try:
+            doc = await storage_r2.download_json(raw_key)
+            segments_data = build_segments_from_docai(doc=doc, full_text=full_text)
+        except Exception:
+            # Fallback im lặng sang heuristic chunking nếu JSON không đọc được.
+            segments_data = []
+    else:
+        segments_data = []
+
+    if not segments_data:
+        segments_data = chunk_full_text_to_segments(full_text)
     segments: list[DocumentSegment] = [
         DocumentSegment(
             segment_index=int(seg["segment_index"]),

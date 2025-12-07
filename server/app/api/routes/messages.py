@@ -1,4 +1,5 @@
 from typing import Any, Dict, List, Tuple
+import uuid
 import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -21,8 +22,9 @@ from server.app.core.security import CurrentUser, get_current_user
 from server.app.db import models, repositories as repo
 from server.app.db.session import get_db_session, async_session
 from server.app.schemas.conversations import Message, MessageCreate, MessageListResponse
-from server.app.services.chunker import chunk_full_text_to_segments
-from server.app.services.rag_engine import RagEngineService
+from server.app.services.chunker import build_segments_from_docai, chunk_full_text_to_segments
+from server.app.services import storage_r2
+from server.app.services.answer_engine import AnswerEngineService
 
 router = APIRouter(prefix="/api/conversations/{conversation_id}/messages")
 
@@ -39,28 +41,40 @@ async def _ensure_conversation(session: AsyncSession, conversation_id: str, user
 
 
 def _compute_similarity(a: str, b: str) -> float:
-    """Very simple similarity score between two strings (0.0–1.0).
+    """Backward-compatible wrapper (kept for potential future use).
 
-    For Phase 7 we keep this cheap: compare lowercased texts using a
-    ratio of common characters over max length. This is not perfect,
-    but good enough to pick a representative source segment.
+    Phase 7.1 dùng similarity ở mức token (xem helpers bên dưới) nên
+    hàm này hiện không còn được dùng trong mapping chính.
     """
-    a_norm = (a or "").strip().lower()
-    b_norm = (b or "").strip().lower()
-    if not a_norm or not b_norm:
+    if not a or not b:
         return 0.0
-    # Limit length to avoid quadratic blowup on very long texts.
-    max_len = 800
-    a_norm = a_norm[:max_len]
-    b_norm = b_norm[:max_len]
+    return 0.0
 
-    # Simple bag-of-characters overlap.
-    set_a = set(a_norm)
-    set_b = set(b_norm)
-    if not set_a or not set_b:
+
+def _normalize_and_tokenize(text: str, max_len: int = 800) -> set[str]:
+    """Normalize text and return a set of tokens for overlap matching."""
+    if not text:
+        return set()
+    value = (text or "").strip().lower()
+    if not value:
+        return set()
+    # Limit length to avoid heavy processing on very long texts.
+    value = value[:max_len]
+    # Replace basic punctuation with spaces, then split.
+    for ch in [",", ".", ";", ":", "!", "?", "(", ")", "[", "]", "{", "}", "\"", "'"]:
+        value = value.replace(ch, " ")
+    tokens = [t for t in value.split() if t]
+    return set(tokens)
+
+
+def _token_overlap_score(a_tokens: set[str], b_tokens: set[str]) -> float:
+    """Compute a simple Jaccard-like overlap score between two token sets."""
+    if not a_tokens or not b_tokens:
         return 0.0
-    common = len(set_a & set_b)
-    denom = max(len(set_a), len(set_b))
+    common = len(a_tokens & b_tokens)
+    denom = max(len(a_tokens), len(b_tokens))
+    if denom == 0:
+        return 0.0
     return common / denom
 
 
@@ -86,6 +100,7 @@ async def _build_citations_for_sections(
             sa.select(
                 models.documents.c.id,
                 models.documents.c.docai_full_text,
+                models.documents.c.docai_raw_r2_key,
                 models.documents.c.status,
             )
             .where(
@@ -97,21 +112,43 @@ async def _build_citations_for_sections(
         result = await session.execute(stmt)
         doc_rows = result.fetchall()
 
-    all_segments: List[Tuple[str, int, int, str]] = []  # (doc_id, segment_index, page_idx, text)
+    # Step 2: build a global list of segments across all documents,
+    # using Document AI JSON when available for high-fidelity segmentation.
+    all_segments: List[Dict[str, Any]] = []
+
     for row in doc_rows:
-        doc_id = str(row[0])
-        full_text = (row[1] or "").strip()
+        row_map = row._mapping
+        doc_id = str(row_map["id"])
+        full_text = (row_map.get("docai_full_text") or "").strip()
         if not full_text:
             continue
-        segments = chunk_full_text_to_segments(full_text)
+
+        raw_key = row_map.get("docai_raw_r2_key")
+        segments: List[Dict[str, Any]] = []
+
+        if raw_key:
+            try:
+                doc = await storage_r2.download_json(raw_key)
+                segments = build_segments_from_docai(doc=doc, full_text=full_text)
+            except Exception:
+                segments = []
+
+        if not segments:
+            segments = chunk_full_text_to_segments(full_text)
+
         for seg in segments:
+            seg_text = str(seg.get("text") or "").strip()
+            tokens = _normalize_and_tokenize(seg_text)
+            if not tokens:
+                continue
             all_segments.append(
-                (
-                    doc_id,
-                    int(seg["segment_index"]),
-                    int(seg.get("page_idx", 0)),
-                    str(seg["text"]),
-                )
+                {
+                    "document_id": doc_id,
+                    "segment_index": int(seg.get("segment_index", 0)),
+                    "page_idx": int(seg.get("page_idx", 0)),
+                    "text": seg_text,
+                    "tokens": tokens,
+                }
             )
 
     if not all_segments:
@@ -121,47 +158,200 @@ async def _build_citations_for_sections(
     sections_with_citations: List[Dict[str, Any]] = []
     citations_flat: List[Dict[str, Any]] = []
 
-    # Step 2: for mỗi section, tìm 1–N segment phù hợp nhất.
+    # Step 3: for mỗi section, tìm segment phù hợp nhất với ràng buộc
+    # thứ tự (monotone alignment) để tránh nhảy lùi bất hợp lý.
+    last_segment_pos = 0
+    num_segments = len(all_segments)
+
     for sec in sections:
         text_val = str(sec.get("text") or "").strip()
         if not text_val:
             sections_with_citations.append({**sec, "citations": []})
             continue
 
-        # Giới hạn độ dài text để so khớp (tránh quá nặng).
-        max_len = 800
-        text_for_match = text_val[:max_len]
+        section_tokens = _normalize_and_tokenize(text_val)
+        if not section_tokens:
+            sections_with_citations.append({**sec, "citations": []})
+            continue
 
         best_score = 0.0
-        best_segment: Tuple[str, int, int, str] | None = None
+        best_pos: int | None = None
 
-        for doc_id, seg_idx, page_idx, seg_text in all_segments:
-            score = _compute_similarity(text_for_match, seg_text)
+        for pos in range(last_segment_pos, num_segments):
+            seg_entry = all_segments[pos]
+            score = _token_overlap_score(section_tokens, seg_entry["tokens"])
             if score > best_score:
                 best_score = score
-                best_segment = (doc_id, seg_idx, page_idx, seg_text)
+                best_pos = pos
 
         citations_for_section: List[Dict[str, Any]] = []
         # Ngưỡng tối thiểu để chấp nhận citation.
-        if best_segment and best_score >= 0.3:
-            doc_id, seg_idx, page_idx, seg_text = best_segment
-            snippet = seg_text.strip()
+        if best_pos is not None and best_score >= 0.3:
+            seg_entry = all_segments[best_pos]
+            snippet = seg_entry["text"].strip()
             if len(snippet) > 200:
                 snippet = snippet[:200] + "..."
             citation = {
-                "document_id": doc_id,
-                "segment_index": seg_idx,
-                "page_idx": page_idx,
+                "document_id": seg_entry["document_id"],
+                "segment_index": seg_entry["segment_index"],
+                "page_idx": seg_entry["page_idx"],
                 "snippet_preview": snippet,
             }
             citations_for_section.append(citation)
             citations_flat.append(citation)
+
+            # Giữ thứ tự không giảm giữa các section.
+            if best_pos >= last_segment_pos:
+                last_segment_pos = best_pos
 
         sections_with_citations.append({**sec, "citations": citations_for_section})
 
     return sections_with_citations, citations_flat
 
 
+async def _build_citations_from_source_ids(
+    workspace_id: str,
+    sections: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Build citations for each section based on source_ids from RAG.
+
+    source_ids are expected in the format "{document_id}:{segment_index}" and
+    correspond to segments built from Document AI JSON or heuristic chunking.
+    """
+    if not sections:
+        return [], []
+
+    # Collect all unique (document_id, segment_index) pairs from sections.
+    id_pairs: set[tuple[str, int]] = set()
+    for sec in sections:
+        src_ids = sec.get("source_ids") or []
+        if not isinstance(src_ids, list):
+            continue
+        for raw_id in src_ids:
+            if not isinstance(raw_id, str):
+                continue
+            raw_id = raw_id.strip()
+            if not raw_id:
+                continue
+            # Expected format: "{document_id}:{segment_index}"
+            parts = raw_id.split(":", 1)
+            if len(parts) != 2:
+                continue
+            doc_id_part, seg_part = parts
+            try:
+                seg_idx = int(seg_part)
+            except ValueError:
+                continue
+            # Validate that doc_id_part is a proper UUID; ignore invalid values
+            # such as "1", "3" etc. to avoid DB errors and fall back gracefully.
+            try:
+                doc_uuid = uuid.UUID(doc_id_part)
+            except (ValueError, AttributeError):
+                continue
+            doc_id_norm = str(doc_uuid)
+            id_pairs.add((doc_id_norm, seg_idx))
+
+    if not id_pairs:
+        # Nothing to map by ID; caller should fall back to text-matching.
+        return sections, []
+
+    # Load documents in this workspace that are referenced by source_ids.
+    async with async_session() as session:  # type: ignore[call-arg]
+        assert isinstance(session, AsyncSession)
+        doc_ids = [doc_id for doc_id, _ in id_pairs]
+        stmt = (
+            sa.select(
+                models.documents.c.id,
+                models.documents.c.docai_full_text,
+                models.documents.c.docai_raw_r2_key,
+                models.documents.c.status,
+            )
+            .where(
+                models.documents.c.workspace_id == workspace_id,
+                models.documents.c.status.in_([DOCUMENT_STATUS_PARSED, DOCUMENT_STATUS_INGESTED]),
+                models.documents.c.docai_full_text.is_not(None),
+                models.documents.c.id.in_(doc_ids),
+            )
+        )
+        result = await session.execute(stmt)
+        doc_rows = result.fetchall()
+
+    # Build a lookup map: (doc_id, segment_index) -> segment info.
+    segment_lookup: Dict[tuple[str, int], Dict[str, Any]] = {}
+
+    for row in doc_rows:
+        row_map = row._mapping
+        doc_id_str = str(row_map["id"])
+        full_text = (row_map.get("docai_full_text") or "").strip()
+        if not full_text:
+            continue
+
+        raw_key = row_map.get("docai_raw_r2_key")
+        segments: List[Dict[str, Any]] = []
+
+        if raw_key:
+            try:
+                doc = await storage_r2.download_json(raw_key)
+                segments = build_segments_from_docai(doc=doc, full_text=full_text)
+            except Exception:
+                segments = []
+
+        if not segments:
+            segments = chunk_full_text_to_segments(full_text)
+
+        for seg in segments:
+            seg_idx = int(seg.get("segment_index", 0))
+            key = (doc_id_str, seg_idx)
+            if key not in id_pairs:
+                continue
+            segment_lookup[key] = {
+                "document_id": doc_id_str,
+                "segment_index": seg_idx,
+                "page_idx": int(seg.get("page_idx", 0)),
+                "text": str(seg.get("text") or "").strip(),
+            }
+
+    sections_with_citations: List[Dict[str, Any]] = []
+    citations_flat: List[Dict[str, Any]] = []
+
+    for sec in sections:
+        src_ids = sec.get("source_ids") or []
+        citations_for_section: List[Dict[str, Any]] = []
+
+        if isinstance(src_ids, list):
+            for raw_id in src_ids:
+                if not isinstance(raw_id, str):
+                    continue
+                raw_id = raw_id.strip()
+                if not raw_id:
+                    continue
+                parts = raw_id.split(":", 1)
+                if len(parts) != 2:
+                    continue
+                doc_id_part, seg_part = parts
+                try:
+                    seg_idx = int(seg_part)
+                except ValueError:
+                    continue
+                key = (doc_id_part, seg_idx)
+                seg_info = segment_lookup.get(key)
+                if not seg_info:
+                    continue
+                snippet = seg_info["text"]
+                if len(snippet) > 200:
+                    snippet = snippet[:200] + "..."
+                citation = {
+                    "document_id": seg_info["document_id"],
+                    "segment_index": seg_info["segment_index"],
+                    "page_idx": seg_info["page_idx"],
+                    "snippet_preview": snippet,
+                }
+                citations_for_section.append(citation)
+                citations_flat.append(citation)
+
+        sections_with_citations.append({**sec, "citations": citations_for_section})
+
+    return sections_with_citations, citations_flat
 async def _process_ai_message_background(
     ai_message_id: str,
     conversation_id: str,
@@ -169,31 +359,29 @@ async def _process_ai_message_background(
     user_id: str,
     question: str,
 ) -> None:
-    """Background task: call RAG engine and update the AI message."""
+    """Background task: call Answer Engine and update the AI message."""
     settings = get_settings()
-    rag_engine = RagEngineService(settings=settings.rag)
 
     try:
-        rag_result = await rag_engine.query(
+        answer_engine = AnswerEngineService()
+        result = await answer_engine.answer_question(
             workspace_id=workspace_id,
+            conversation_id=conversation_id,
             question=question,
-            system_prompt=RAG_DEFAULT_SYSTEM_PROMPT,
-            mode=settings.rag.query_mode,
         )
-        answer = rag_result.get("answer") or ""
-        raw_sections = rag_result.get("sections") or []
 
-        # Build citations for each section using server-side text matching.
-        sections_with_citations, citations_flat = await _build_citations_for_sections(
-            workspace_id=workspace_id,
-            sections=list(raw_sections),
-        )
+        answer = result.get("answer") or ""
+        sections_with_citations = result.get("sections") or []
+        citations_flat = result.get("citations") or []
+        llm_usage = result.get("llm_usage")
 
         metadata: dict[str, Any] = {}
         if sections_with_citations:
             metadata["sections"] = sections_with_citations
         if citations_flat:
             metadata["citations"] = citations_flat
+        if llm_usage:
+            metadata["llm_usage"] = llm_usage
 
         # Update AI message as done in a fresh DB session.
         async with async_session() as bg_session:  # type: ignore[call-arg]

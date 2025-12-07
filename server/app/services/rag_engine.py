@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import uuid
 from typing import Any, Dict, List, Optional
 
 from server.app.core.constants import RAG_DEFAULT_SYSTEM_PROMPT
@@ -16,6 +18,13 @@ from server.app.core.logging import get_logger
 
 
 logger = get_logger(__name__)
+
+# Regex to detect SEG tags embedded in ingested text, e.g.:
+# [SEG={document_uuid}:{segment_index}]
+_SEG_TAG_PATTERN = re.compile(
+    r"\[SEG=(?P<id>[0-9a-fA-F\-]{36}:\d+)\]",
+    flags=re.MULTILINE,
+)
 
 
 class RagEngineService:
@@ -228,6 +237,93 @@ class RagEngineService:
         )
         return rag_doc_id
 
+    async def get_segment_ids_for_query(
+        self,
+        workspace_id: str,
+        question: str,
+        mode: Optional[str] = None,
+    ) -> List[str]:
+        """Retrieve SEG-based segment IDs for a query without calling any LLM.
+
+        This uses LightRAG's query pipeline in \"only_need_prompt\" mode to
+        obtain the raw retrieval prompt, then extracts all
+        [SEG={document_id}:{index}] tags in order. IDs are normalized to
+        canonical UUID strings and integer indices.
+        """
+        rag = self._get_rag_instance(workspace_id)
+
+        # Ensure LightRAG is initialized for this RAGAnything instance. This is
+        # required because lightrag.aquery() expects storages to be ready.
+        try:
+            init_result = await rag._ensure_lightrag_initialized()
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "Failed to initialize LightRAG for workspace=%s when retrieving segment IDs: %s",
+                workspace_id,
+                str(exc),
+            )
+            raise
+        if isinstance(init_result, dict) and not init_result.get("success", True):
+            logger.error(
+                "LightRAG initialization reported failure for workspace=%s: %s",
+                workspace_id,
+                init_result.get("error"),
+            )
+            raise RuntimeError(f"Failed to initialize RAG engine for workspace {workspace_id}")
+
+        # Build a LightRAG QueryParam with only_need_prompt=True so that the
+        # retrieval prompt is returned without generating a final answer via LLM.
+        try:
+            from lightrag import QueryParam  # type: ignore[import]
+        except ImportError as exc:  # pragma: no cover - environment/config issue
+            raise RuntimeError(
+                "LightRAG must be installed to use get_segment_ids_for_query."
+            ) from exc
+
+        query_mode = mode or self.settings.query_mode
+        query_param = QueryParam(mode=query_mode, only_need_prompt=True)
+
+        logger.info(
+            "Retrieving segment IDs (only_need_prompt) for workspace=%s mode=%s question_preview=%s",
+            workspace_id,
+            query_mode,
+            question[:80],
+        )
+
+        raw_prompt = await rag.lightrag.aquery(question, param=query_param)
+        raw_str = str(raw_prompt or "").strip()
+
+        # Extract normalized segment IDs in order of appearance.
+        seen: set[str] = set()
+        ordered_ids: List[str] = []
+
+        for match in _SEG_TAG_PATTERN.finditer(raw_str):
+            seg_id = match.group("id")
+            if not seg_id:
+                continue
+            parts = seg_id.split(":", 1)
+            if len(parts) != 2:
+                continue
+            doc_part, seg_part = parts
+            try:
+                doc_uuid = uuid.UUID(doc_part)
+                seg_idx = int(seg_part)
+            except (ValueError, TypeError, AttributeError):
+                continue
+            normalized = f"{doc_uuid}:{seg_idx}"
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            ordered_ids.append(normalized)
+
+        logger.info(
+            "Retrieved %d unique SEG IDs for workspace=%s",
+            len(ordered_ids),
+            workspace_id,
+        )
+
+        return ordered_ids
+
     async def query(
         self,
         workspace_id: str,
@@ -278,32 +374,43 @@ class RagEngineService:
             raise RuntimeError(f"Failed to initialize RAG engine for workspace {workspace_id}")
 
         # Merge caller-provided system prompt (if any) with the default persona,
-        # và thêm hướng dẫn trả JSON để backend có thể trích xuất sections.
+        # and append explicit JSON instructions (in English) so that the backend
+        # can reliably extract sections + source_ids from the model output.
         base_prompt = system_prompt or RAG_DEFAULT_SYSTEM_PROMPT
         effective_system_prompt = (
             base_prompt
             + "\n\n"
-            + "Khi có thể, hãy trả về **DUY NHẤT** một JSON hợp lệ với cấu trúc đơn giản sau:\n"
+            + "You will see context passages prefixed with tags in the form:\n"
+            + "[SEG={document_id}:{segment_index}] <segment text>\n\n"
+            + "Read the text normally, but ALWAYS keep track of these SEG IDs when you reference sources.\n\n"
+            + "When possible, respond with a **SINGLE VALID JSON** object using the following structure:\n"
             + '{\n'
             + '  "sections": [\n'
-            + '    { "text": "<đoạn trả lời 1>" },\n'
-            + '    { "text": "<đoạn trả lời 2>" }\n'
+            + '    {\n'
+            + '      "text": "<answer section 1>",\n'
+            + '      "source_ids": ["{document_id}:{segment_index}", "..."]\n'
+            + "    },\n"
+            + '    {\n'
+            + '      "text": "<answer section 2>",\n'
+            + '      "source_ids": ["{document_id}:{segment_index}"]\n'
+            + "    }\n"
             + "  ]\n"
             + "}\n\n"
-            + "- Không cần tự chèn thông tin document_id, segment_index hay citations vào JSON.\n"
-            + "- Nếu không thể tuân thủ hoàn toàn, vẫn trả JSON gần đúng nhất có thể.\n"
-            + "- Nếu hoàn toàn không thể trả JSON, trả lời bình thường dưới dạng text."
+            + "- Every element in source_ids MUST come from a [SEG=...] tag that appears in the context.\n"
+            + "- Do NOT invent new IDs that were not present in the context.\n"
+            + "- If you cannot fully follow this format, return the closest valid JSON you can.\n"
+            + "- If you absolutely cannot return JSON, then answer in plain text."
         )
 
         query_mode = mode or self.settings.query_mode
 
-        # Vì phiên bản RAG-Anything hiện tại không nhận system_prompt trực tiếp
-        # (system_prompt sẽ bị đẩy vào kwargs và gây lỗi QueryParam), ta ghép
-        # persona + hướng dẫn JSON vào ngay trong prompt truy vấn.
+        # RAG-Anything's aquery does not accept system_prompt directly; it would
+        # treat unknown kwargs as QueryParam and fail. Therefore we concatenate
+        # persona + JSON instructions directly into the query text.
         combined_query = (
             effective_system_prompt
             + "\n\n"
-            + "Câu hỏi của người dùng:\n"
+            + "User question:\n"
             + question
         )
 
@@ -323,8 +430,33 @@ class RagEngineService:
         sections: List[Dict[str, Any]] = []
 
         # Best-effort: if the model followed the JSON instruction, parse it.
+        # Nhiều model sẽ wrap JSON trong ```json ... ```, nên ta cố gắng
+        # bóc ra phần {...} trước khi parse để tránh JSON bị show thẳng cho user.
+        candidate_payloads: List[str] = []
+        raw_str = raw_result.strip()
+        candidate_payloads.append(raw_str)
+
+        # Heuristic: nếu có dấu { và }, thử trích đoạn từ { đầu tiên tới } cuối cùng.
+        start_brace = raw_str.find("{")
+        end_brace = raw_str.rfind("}")
+        if start_brace != -1 and end_brace != -1 and end_brace > start_brace:
+            inner = raw_str[start_brace : end_brace + 1].strip()
+            if inner and inner != raw_str:
+                candidate_payloads.insert(0, inner)
+
+        parsed: Dict[str, Any] | None = None
+        for payload in candidate_payloads:
+            try:
+                obj = json.loads(payload)
+                if isinstance(obj, dict) and "sections" in obj:
+                    parsed = obj
+                    break
+            except (json.JSONDecodeError, TypeError):
+                continue
+
         try:
-            parsed = json.loads(raw_result)
+            if parsed is not None and isinstance(parsed, dict) and "sections" in parsed:
+                raw_sections = parsed.get("sections") or []
             if isinstance(parsed, dict) and "sections" in parsed:
                 raw_sections = parsed.get("sections") or []
                 if isinstance(raw_sections, list):
@@ -334,7 +466,30 @@ class RagEngineService:
                         text_val = sec.get("text")
                         if not isinstance(text_val, str):
                             continue
-                        sections.append({"text": text_val})
+                        source_ids_val = sec.get("source_ids") or []
+
+                        source_ids_clean: List[str] = []
+                        if isinstance(source_ids_val, list):
+                            for raw_id in source_ids_val:
+                                if not isinstance(raw_id, str):
+                                    continue
+                                raw_id = raw_id.strip()
+                                if not raw_id:
+                                    continue
+                                parts = raw_id.split(":", 1)
+                                if len(parts) != 2:
+                                    continue
+                                doc_part, seg_part = parts
+                                # Chỉ chấp nhận ID có document_id là UUID hợp lệ
+                                # và segment_index là số nguyên.
+                                try:
+                                    doc_uuid = uuid.UUID(doc_part)
+                                    _ = int(seg_part)
+                                except (ValueError, AttributeError):
+                                    continue
+                                source_ids_clean.append(f"{doc_uuid}:{int(seg_part)}")
+
+                        sections.append({"text": text_val, "source_ids": source_ids_clean})
 
                 if sections:
                     # Build answer text by joining section texts with double newlines.

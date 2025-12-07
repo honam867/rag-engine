@@ -80,6 +80,34 @@ class RagSettings(BaseSettings):
     embedding_model: str = "text-embedding-3-large"
 
 
+class AnswerSettings(BaseSettings):
+    """Settings for the Phase 8 Answer Orchestrator LLM.
+
+    This controls the independent LLM used to generate chat answers
+    (separate from the LLM used inside RAG-Anything / LightRAG).
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="ANSWER_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # Default model for answer generation. This should be an OpenAI-compatible
+    # chat model name (e.g. gpt-4.1-mini, gpt-4o-mini).
+    model: str = "gpt-4.1-mini"
+    # Optional base URL for OpenAI-compatible APIs (if not set, falls back
+    # to OPENAI_BASE_URL or the official api.openai.com endpoint).
+    base_url: str | None = None
+    # Optional dedicated API key; if not set, the client will fall back to
+    # OPENAI_API_KEY from the environment.
+    api_key: str | None = None
+    # Default completion limits.
+    max_tokens: int = 2048
+    temperature: float = 0.2
+
+
 class RedisSettings(BaseSettings):
     """Settings for Redis Event Bus (Phase 6)."""
 
@@ -100,6 +128,7 @@ class Settings(BaseSettings):
     auth: AuthSettings = AuthSettings()  # type: ignore[call-arg]
     docai: DocumentAISettings = DocumentAISettings()  # type: ignore[call-arg]
     rag: RagSettings = RagSettings()  # type: ignore[call-arg]
+    answer: AnswerSettings = AnswerSettings()  # type: ignore[call-arg]
     redis: RedisSettings = RedisSettings()  # type: ignore[call-arg]
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
