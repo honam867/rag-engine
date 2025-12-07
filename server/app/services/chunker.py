@@ -18,6 +18,13 @@ from server.app.db import models
 logger = get_logger(__name__)
 
 
+# Maximum approximate number of characters per content_list item when
+# ingesting into RAG-Anything. This groups multiple UI segments into a
+# larger macro-chunk so that retrieval sees longer, more natural pieces
+# of text, while SEG tags still preserve per-segment identity.
+MAX_INGEST_CHARS_PER_ITEM = 4000
+
+
 def make_segment_id(document_id: str, segment_index: int) -> str:
     """Build a stable segment identifier for ID-based citations."""
     return f"{document_id}:{segment_index}"
@@ -281,17 +288,56 @@ class ChunkerService:
             segments = chunk_full_text_to_segments(full_text)
 
         content_list: List[dict] = []
+        # Build macro-chunks for ingestion: group multiple UI segments into
+        # longer text blocks, but keep [SEG=doc:idx] markers inline so that
+        # retrieval prompts still contain per-segment identifiers.
+        current_text_parts: List[str] = []
+        current_len = 0
+        current_page_idx = 0
+
+        def _flush_current() -> None:
+            nonlocal current_text_parts, current_len, current_page_idx
+            if not current_text_parts:
+                return
+            text_block = "\n\n".join(current_text_parts).strip()
+            if text_block:
+                content_list.append(
+                    {
+                        "type": "text",
+                        "text": text_block,
+                        "page_idx": current_page_idx,
+                    }
+                )
+            current_text_parts = []
+            current_len = 0
+
         for seg in segments:
             segment_index = int(seg.get("segment_index", 0))
             segment_id = make_segment_id(document_id, segment_index)
-            text_with_id = f"[SEG={segment_id}] {seg['text']}"
-            content_list.append(
-                {
-                    "type": "text",
-                    "text": text_with_id,
-                    "page_idx": seg.get("page_idx", 0),
-                }
-            )
+            seg_text = str(seg.get("text") or "").strip()
+            if not seg_text:
+                continue
+            text_with_id = f"[SEG={segment_id}] {seg_text}"
+
+            # Start new block if current one would grow too large.
+            if (
+                current_text_parts
+                and current_len + len(text_with_id) + 2 > MAX_INGEST_CHARS_PER_ITEM
+            ):
+                _flush_current()
+
+            if not current_text_parts:
+                # First segment in a new block – use its page_idx as the
+                # representative page for the whole block.
+                try:
+                    current_page_idx = int(seg.get("page_idx", 0))
+                except (TypeError, ValueError):
+                    current_page_idx = 0
+
+            current_text_parts.append(text_with_id)
+            current_len += len(text_with_id) + 2
+
+        _flush_current()
 
         self._logger.info(
             "Built content_list for document %s (workspace=%s, filename=%s, chunks=%d)",

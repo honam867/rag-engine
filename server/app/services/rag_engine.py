@@ -252,6 +252,53 @@ class RagEngineService:
         """
         rag = self._get_rag_instance(workspace_id)
 
+        raw_str = await self._get_raw_prompt_for_query(
+            rag=rag,
+            workspace_id=workspace_id,
+            question=question,
+            mode=mode,
+        )
+
+        # Extract normalized segment IDs in order of appearance.
+        seen: set[str] = set()
+        ordered_ids: List[str] = []
+
+        for match in _SEG_TAG_PATTERN.finditer(raw_str):
+            seg_id = match.group("id")
+            if not seg_id:
+                continue
+            parts = seg_id.split(":", 1)
+            if len(parts) != 2:
+                continue
+            doc_part, seg_part = parts
+            try:
+                doc_uuid = uuid.UUID(doc_part)
+                seg_idx = int(seg_part)
+            except (ValueError, TypeError, AttributeError):
+                continue
+            normalized = f"{doc_uuid}:{seg_idx}"
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            ordered_ids.append(normalized)
+
+        logger.info(
+            "Retrieved %d unique SEG IDs for workspace=%s",
+            len(ordered_ids),
+            workspace_id,
+        )
+
+        return ordered_ids
+
+    async def _get_raw_prompt_for_query(
+        self,
+        rag: Any,
+        workspace_id: str,
+        question: str,
+        mode: Optional[str] = None,
+    ) -> str:
+        """Call LightRAG in only_need_prompt mode and return the raw prompt string."""
+
         # Ensure LightRAG is initialized for this RAGAnything instance. This is
         # required because lightrag.aquery() expects storages to be ready.
         try:
@@ -292,12 +339,51 @@ class RagEngineService:
 
         raw_prompt = await rag.lightrag.aquery(question, param=query_param)
         raw_str = str(raw_prompt or "").strip()
+        # Log a truncated preview for debugging.
+        logger.info(
+            "LightRAG raw prompt for workspace=%s (first 2000 chars): %s",
+            workspace_id,
+            raw_str[:2000],
+        )
+        return raw_str
 
-        # Extract normalized segment IDs in order of appearance.
-        seen: set[str] = set()
-        ordered_ids: List[str] = []
+    async def get_segments_for_query(
+        self,
+        workspace_id: str,
+        question: str,
+        mode: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Retrieve context segments (segment_id + text) for a query.
 
-        for match in _SEG_TAG_PATTERN.finditer(raw_str):
+        This calls LightRAG in only_need_prompt mode and then parses the
+        returned prompt to extract each [SEG={document_id}:{segment_index}]
+        marker together with the text that follows it up to the next marker.
+
+        The result is a list of dicts:
+        {
+          "segment_id": "doc_uuid:segment_index",
+          "document_id": "doc_uuid",
+          "segment_index": int,
+          "text": "<segment text as seen by LightRAG>",
+        }
+
+        No additional ranking or DB access is performed here; this method
+        simply reflects the context that RAG-Anything / LightRAG decided
+        to use for the query.
+        """
+        rag = self._get_rag_instance(workspace_id)
+        raw_str = await self._get_raw_prompt_for_query(
+            rag=rag,
+            workspace_id=workspace_id,
+            question=question,
+            mode=mode,
+        )
+
+        segments: List[Dict[str, Any]] = []
+
+        # Find all SEG markers and slice text between them.
+        matches = list(_SEG_TAG_PATTERN.finditer(raw_str))
+        for idx, match in enumerate(matches):
             seg_id = match.group("id")
             if not seg_id:
                 continue
@@ -310,19 +396,29 @@ class RagEngineService:
                 seg_idx = int(seg_part)
             except (ValueError, TypeError, AttributeError):
                 continue
-            normalized = f"{doc_uuid}:{seg_idx}"
-            if normalized in seen:
+
+            start = match.end()
+            end = matches[idx + 1].start() if idx + 1 < len(matches) else len(raw_str)
+            text = raw_str[start:end].strip()
+            if not text:
                 continue
-            seen.add(normalized)
-            ordered_ids.append(normalized)
+
+            segments.append(
+                {
+                    "segment_id": f"{doc_uuid}:{seg_idx}",
+                    "document_id": str(doc_uuid),
+                    "segment_index": seg_idx,
+                    "text": text,
+                }
+            )
 
         logger.info(
-            "Retrieved %d unique SEG IDs for workspace=%s",
-            len(ordered_ids),
+            "Parsed %d context segments from LightRAG prompt for workspace=%s",
+            len(segments),
             workspace_id,
         )
 
-        return ordered_ids
+        return segments
 
     async def query(
         self,

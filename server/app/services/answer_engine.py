@@ -1,26 +1,12 @@
-"""Answer Orchestrator for Phase 8 – retrieval-only RAG + LLM answer box.
-
-This service coordinates:
-- Retrieval from RAG-Anything / LightRAG (segments with SEG IDs).
-- Prompt construction with context segments.
-- Calling an OpenAI-compatible LLM via LLMClient.
-- Mapping source_ids -> citations aligned with raw-text segments.
-"""
+"""Answer Orchestrator for Phase 8 – retrieval-only RAG + LLM answer box."""
 
 from __future__ import annotations
 
-import uuid
+import json
 from typing import Any, Dict, List, Tuple
-
-import sqlalchemy as sa
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.app.core.config import AnswerSettings, get_settings
 from server.app.core.logging import get_logger
-from server.app.db import models
-from server.app.db.session import async_session
-from server.app.services import storage_r2
-from server.app.services.chunker import build_segments_from_docai, chunk_full_text_to_segments
 from server.app.services.llm_client import LLMClient, LLMUsage
 from server.app.services.rag_engine import RagEngineService
 
@@ -42,115 +28,6 @@ class AnswerEngineService:
         self._rag_engine = rag_engine or RagEngineService(settings=settings_all.rag)
         self._llm_client = llm_client or LLMClient(settings=self._answer_settings)
         self._logger = get_logger(__name__)
-
-    async def _load_segments_for_ids(
-        self,
-        workspace_id: str,
-        segment_ids: List[str],
-    ) -> Tuple[List[Dict[str, Any]], Dict[str, Dict[str, Any]]]:
-        """Resolve segment_ids -> canonical segments via Document AI segmentation.
-
-        Returns (ordered_list, segment_lookup_by_segment_id).
-        """
-        if not segment_ids:
-            return [], {}
-
-        # Parse and normalize IDs: "{document_uuid}:{segment_index}"
-        id_pairs: List[tuple[str, int]] = []
-        id_pair_set: set[tuple[str, int]] = set()
-        for raw_id in segment_ids:
-            if not isinstance(raw_id, str):
-                continue
-            value = raw_id.strip()
-            if not value:
-                continue
-            parts = value.split(":", 1)
-            if len(parts) != 2:
-                continue
-            doc_part, seg_part = parts
-            try:
-                doc_uuid = uuid.UUID(doc_part)
-                seg_idx = int(seg_part)
-            except (ValueError, TypeError, AttributeError):
-                continue
-            normalized_pair = (str(doc_uuid), seg_idx)
-            if normalized_pair not in id_pair_set:
-                id_pair_set.add(normalized_pair)
-                id_pairs.append(normalized_pair)
-
-        if not id_pairs:
-            return [], {}
-
-        # Load documents for these IDs within the workspace.
-        async with async_session() as session:  # type: ignore[call-arg]
-            assert isinstance(session, AsyncSession)
-            doc_ids = [doc_id for doc_id, _ in id_pairs]
-            stmt = (
-                sa.select(
-                    models.documents.c.id,
-                    models.documents.c.docai_full_text,
-                    models.documents.c.docai_raw_r2_key,
-                    models.documents.c.status,
-                )
-                .where(
-                    models.documents.c.workspace_id == workspace_id,
-                    models.documents.c.docai_full_text.is_not(None),
-                    models.documents.c.id.in_(doc_ids),
-                )
-            )
-            result = await session.execute(stmt)
-            doc_rows = result.fetchall()
-
-        # Build lookup (doc_id, segment_index) -> segment info.
-        segment_lookup: Dict[tuple[str, int], Dict[str, Any]] = {}
-
-        for row in doc_rows:
-            row_map = row._mapping
-            doc_id_str = str(row_map["id"])
-            full_text = (row_map.get("docai_full_text") or "").strip()
-            if not full_text:
-                continue
-
-            raw_key = row_map.get("docai_raw_r2_key")
-            segments: List[Dict[str, Any]] = []
-
-            if raw_key:
-                try:
-                    doc = await storage_r2.download_json(raw_key)
-                    segments = build_segments_from_docai(doc=doc, full_text=full_text)
-                except Exception:  # noqa: BLE001
-                    segments = []
-
-            if not segments:
-                segments = chunk_full_text_to_segments(full_text)
-
-            for seg in segments:
-                seg_idx = int(seg.get("segment_index", 0))
-                key = (doc_id_str, seg_idx)
-                if key not in id_pair_set:
-                    continue
-                segment_lookup[key] = {
-                    "segment_id": f"{doc_id_str}:{seg_idx}",
-                    "document_id": doc_id_str,
-                    "segment_index": seg_idx,
-                    "page_idx": int(seg.get("page_idx", 0)),
-                    "text": str(seg.get("text") or "").strip(),
-                }
-
-        # Build ordered list of retrieved segments.
-        ordered_segments: List[Dict[str, Any]] = []
-        for doc_id_str, seg_idx in id_pairs:
-            seg_info = segment_lookup.get((doc_id_str, seg_idx))
-            if not seg_info:
-                continue
-            ordered_segments.append(seg_info)
-
-        # Also expose a lookup by segment_id for fast citation mapping.
-        segment_by_segment_id: Dict[str, Dict[str, Any]] = {
-            seg["segment_id"]: seg for seg in ordered_segments
-        }
-
-        return ordered_segments, segment_by_segment_id
 
     def _build_system_prompt(self) -> str:
         """Build the (English) system prompt for the answer LLM."""
@@ -283,47 +160,97 @@ Rules for source_ids:
         workspace_id: str,
         conversation_id: str,
         question: str,
-        max_context_segments: int = 8,
+        max_context_segments: int = 32,
     ) -> Dict[str, Any]:
         """End-to-end answer pipeline for a single user question."""
-        # 1) Retrieve segment IDs from RAG-Anything / LightRAG.
-        segment_ids: List[str] = []
+        # 1) Retrieve context segments (segment_id + text) from RAG-Anything / LightRAG.
+        retrieved_segments: List[Dict[str, Any]] = []
         try:
-            segment_ids = await self._rag_engine.get_segment_ids_for_query(
+            retrieved_segments = await self._rag_engine.get_segments_for_query(
                 workspace_id=workspace_id,
                 question=question,
                 mode=None,
             )
         except Exception as exc:  # noqa: BLE001
             self._logger.error(
-                "Failed to retrieve segment IDs from RAG engine for workspace=%s: %s",
+                "Failed to retrieve segments from RAG engine for workspace=%s: %s",
                 workspace_id,
                 str(exc),
             )
 
-        # 2) Resolve segment IDs -> canonical segments from Document AI + DB.
-        retrieved_segments: List[Dict[str, Any]] = []
+        # Normalize segments and build a lookup by segment_id for citations.
+        canonical_segments: List[Dict[str, Any]] = []
         segment_by_segment_id: Dict[str, Dict[str, Any]] = {}
-        if segment_ids:
+        for seg in retrieved_segments or []:
+            seg_id_raw = str(seg.get("segment_id") or "").strip()
+            if not seg_id_raw:
+                continue
+            # Ensure we have document_id and segment_index; fall back to parsing from seg_id.
+            doc_id = str(seg.get("document_id") or "").strip()
+            seg_index_val = seg.get("segment_index")
+            if not doc_id or seg_index_val is None:
+                parts = seg_id_raw.split(":", 1)
+                if len(parts) == 2:
+                    doc_id = doc_id or parts[0]
+                    try:
+                        seg_index_val = seg_index_val if seg_index_val is not None else int(parts[1])
+                    except (TypeError, ValueError):
+                        seg_index_val = seg_index_val if seg_index_val is not None else 0
             try:
-                retrieved_segments, segment_by_segment_id = await self._load_segments_for_ids(
-                    workspace_id=workspace_id,
-                    segment_ids=segment_ids,
-                )
-            except Exception as exc:  # noqa: BLE001
-                self._logger.error(
-                    "Failed to load canonical segments for workspace=%s: %s",
-                    workspace_id,
-                    str(exc),
-                )
+                seg_index = int(seg_index_val)
+            except (TypeError, ValueError):
+                seg_index = 0
+
+            text_val = str(seg.get("text") or "").strip()
+            page_idx = 0  # Page index is not available from LightRAG prompt; keep 0 as placeholder.
+
+            canonical = {
+                "segment_id": seg_id_raw,
+                "document_id": doc_id,
+                "segment_index": seg_index,
+                "page_idx": page_idx,
+                "text": text_val,
+            }
+            canonical_segments.append(canonical)
+            segment_by_segment_id[seg_id_raw] = canonical
 
         # Limit the number of context segments to avoid oversized prompts.
-        if max_context_segments > 0 and len(retrieved_segments) > max_context_segments:
-            retrieved_segments = retrieved_segments[:max_context_segments]
+        if max_context_segments > 0 and len(canonical_segments) > max_context_segments:
+            canonical_segments = canonical_segments[:max_context_segments]
+
+        segment_ids: List[str] = [seg["segment_id"] for seg in canonical_segments]
+
+        # Debug logging: show what RAG-Anything/LightRAG actually retrieved (as JSON).
+        # This helps verify SEG IDs and the canonical segments we pass into the LLM.
+        try:
+            preview_segments = [
+                {
+                    "segment_id": seg.get("segment_id"),
+                    "document_id": seg.get("document_id"),
+                    "segment_index": seg.get("segment_index"),
+                    "page_idx": seg.get("page_idx"),
+                    "text_preview": (seg.get("text") or "")[:200],
+                }
+                for seg in canonical_segments
+            ]
+            self._logger.info(
+                "AnswerEngine retrieval for workspace=%s conversation=%s: segment_ids=%s segments=%s",
+                workspace_id,
+                conversation_id,
+                segment_ids,
+                json.dumps(preview_segments, ensure_ascii=False),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning(
+                "Failed to log retrieval preview for workspace=%s conversation=%s: %s",
+                workspace_id,
+                conversation_id,
+                str(exc),
+            )
 
         # 3) Build prompts.
         system_prompt = self._build_system_prompt()
-        user_prompt = self._build_user_prompt(question=question, segments=retrieved_segments)
+        user_prompt = self._build_user_prompt(question=question, segments=canonical_segments)
 
         # 4) Call LLM.
         raw_text, parsed_json, usage = await self._llm_client.generate_json(
@@ -347,8 +274,8 @@ Rules for source_ids:
             "citations": citations_flat,
         }
 
-        if retrieved_segments:
-            result["retrieved_segments"] = retrieved_segments
+        if canonical_segments:
+            result["retrieved_segments"] = canonical_segments
 
         if isinstance(usage, LLMUsage):
             result["llm_usage"] = {
