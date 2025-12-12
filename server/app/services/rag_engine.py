@@ -1,38 +1,42 @@
-"""RAG Engine wrapper around RAG-Anything / LightRAG (Phase 3).
+"""RAG Engine wrapper around LightRAG (Phase 9).
 
 This module defines a thin adapter so that the rest of the backend does
-not depend directly on RAG-Anything internals.
+not depend directly on LightRAG internals.
 """
 
 from __future__ import annotations
 
-import json
 import os
-import re
-import uuid
 from typing import Any, Dict, List, Optional
 
-from server.app.core.constants import RAG_DEFAULT_SYSTEM_PROMPT
 from server.app.core.config import RagSettings, get_settings
 from server.app.core.logging import get_logger
 
 
 logger = get_logger(__name__)
 
-# Regex to detect SEG tags embedded in ingested text, e.g.:
-# [SEG={document_uuid}:{segment_index}]
-_SEG_TAG_PATTERN = re.compile(
-    r"\[SEG=(?P<id>[0-9a-fA-F\-]{36}:\d+)\]",
-    flags=re.MULTILINE,
-)
 
+def _infer_embedding_dim(model_name: str) -> int:
+    """Best-effort mapping from embedding model name → vector dimension.
+
+    - text-embedding-3-small → 1536
+    - text-embedding-3-large → 3072
+    - fallback: 3072 (giữ nguyên behavior cũ nếu không rõ).
+    """
+    name = (model_name or "").lower()
+    if "text-embedding-3-small" in name:
+        return 1536
+    if "text-embedding-3-large" in name:
+        return 3072
+    # Default: keep 3072 to match previous phases using text-embedding-3-large.
+    return 3072
 
 class RagEngineService:
-    """Adapter between application code and RAG-Anything."""
+    """Adapter between application code and LightRAG."""
 
     def __init__(self, settings: RagSettings | None = None) -> None:
         self.settings: RagSettings = settings or get_settings().rag
-        # Actual RAG-Anything / LightRAG instances are initialized lazily per workspace.
+        # LightRAG instances are initialized lazily per workspace.
         self._instances: dict[str, Any] = {}
 
     def _ensure_postgres_env_from_supabase(self) -> None:
@@ -81,12 +85,14 @@ class RagEngineService:
         os.environ.setdefault("POSTGRES_PASSWORD", password)
         os.environ.setdefault("POSTGRES_DATABASE", database)
         os.environ.setdefault("POSTGRES_MAX_CONNECTIONS", "10")
-        # Disable asyncpg statement cache when going through PgBouncer transaction pooler,
-        # as recommended by asyncpg docs and error hints.
+        # Disable asyncpg statement cache when going through PgBouncer transaction pooler.
         os.environ.setdefault("POSTGRES_STATEMENT_CACHE_SIZE", "0")
-        # Ensure EMBEDDING_DIM matches the OpenAI embedding model we use (text-embedding-3-large → 3072 dims)
-        # so that PGVector tables are created with the correct vector dimension.
-        os.environ.setdefault("EMBEDDING_DIM", "3072")
+
+        # Ensure EMBEDDING_DIM matches the OpenAI embedding model we use so that
+        # PGVector tables are created with the correct vector dimension.
+        rag_settings = get_settings().rag
+        emb_dim = _infer_embedding_dim(rag_settings.embedding_model)
+        os.environ.setdefault("EMBEDDING_DIM", str(emb_dim))
 
         logger.info(
             "Configured LightRAG POSTGRES_* from SUPABASE_DB_URL (host=%s, db=%s); "
@@ -95,11 +101,11 @@ class RagEngineService:
             database,
         )
 
-    def _get_rag_instance(self, workspace_id: str) -> Any:
-        """Return (and lazily create) a RAGAnything instance for a workspace.
+    def _get_lightrag_instance(self, workspace_id: str) -> Any:
+        """Return (and lazily create) a LightRAG instance for a workspace.
 
-        Each workspace gets its own LightRAG working directory so knowledge
-        is naturally isolated at the storage layer.
+        Each workspace gets its own working directory so knowledge is
+        naturally isolated at the storage layer.
         """
         if workspace_id in self._instances:
             return self._instances[workspace_id]
@@ -108,30 +114,27 @@ class RagEngineService:
         self._ensure_postgres_env_from_supabase()
 
         try:
-            from raganything import RAGAnything, RAGAnythingConfig
-            from lightrag.llm.openai import openai_complete_if_cache, openai_embed
-            from lightrag.utils import EmbeddingFunc
+            from lightrag import LightRAG  # type: ignore[import]
+            from lightrag.llm.openai import openai_complete_if_cache, openai_embed  # type: ignore[import]
+            from lightrag.utils import EmbeddingFunc  # type: ignore[import]
         except ImportError as exc:  # pragma: no cover - environment/config issue
             raise RuntimeError(
-                "RAG-Anything (raganything) and LightRAG must be installed to use RagEngineService."
+                "LightRAG (lightrag-hku) must be installed to use RagEngineService."
             ) from exc
 
         # Per-workspace storage directory under the configured base dir.
         workspace_dir = os.path.join(self.settings.working_dir, workspace_id)
-
-        # Basic configuration: we only rely on pre-parsed content_list, so keep
-        # parser/multimodal features at their defaults.
-        config = RAGAnythingConfig(working_dir=workspace_dir)
 
         # Read model configuration from settings / environment.
         api_key = os.getenv("OPENAI_API_KEY")
         base_url = os.getenv("OPENAI_BASE_URL")
         llm_model_name = self.settings.llm_model
         embedding_model_name = self.settings.embedding_model
+        embedding_dim = _infer_embedding_dim(embedding_model_name)
 
         if not api_key:
             logger.warning(
-                "OPENAI_API_KEY is not set; RAG-Anything LLM/embedding calls will fail until it is configured."
+                "OPENAI_API_KEY is not set; LightRAG LLM/embedding calls will fail until it is configured."
             )
 
         def llm_model_func(
@@ -140,10 +143,7 @@ class RagEngineService:
             history_messages: Optional[list] = None,
             **kwargs: Any,
         ) -> str:
-            """Wrapper around LightRAG's OpenAI helper.
-
-            This function signature matches what RAG-Anything expects.
-            """
+            """Wrapper around LightRAG's OpenAI helper."""
             if history_messages is None:
                 history_messages = []
             return openai_complete_if_cache(
@@ -157,7 +157,7 @@ class RagEngineService:
             )
 
         embedding_func = EmbeddingFunc(
-            embedding_dim=3072,
+            embedding_dim=embedding_dim,
             max_token_size=8192,
             func=lambda texts: openai_embed(
                 texts,
@@ -170,32 +170,26 @@ class RagEngineService:
         # Configure LightRAG to use Supabase Postgres + PGVector as storage backend.
         # Workspace isolation is enforced via the LightRAG workspace field, which
         # maps to a "workspace" column in the lightrag_* tables.
-        lightrag_kwargs: Dict[str, Any] = {
-            "working_dir": workspace_dir,
-            "workspace": workspace_id,
-            "kv_storage": "PGKVStorage",
-            "vector_storage": "PGVectorStorage",
-            "doc_status_storage": "PGDocStatusStorage",
-            "vector_db_storage_cls_kwargs": {
-                # Align with LightRAG default cosine threshold (0.2) unless
-                # overridden later; this can be tuned if needed.
+        lightrag = LightRAG(
+            working_dir=workspace_dir,
+            workspace=workspace_id,
+            kv_storage="PGKVStorage",
+            vector_storage="PGVectorStorage",
+            doc_status_storage="PGDocStatusStorage",
+            embedding_func=embedding_func,
+            llm_model_func=llm_model_func,
+            vector_db_storage_cls_kwargs={
                 "cosine_better_than_threshold": 0.2,
             },
-        }
-
-        rag = RAGAnything(
-            config=config,
-            llm_model_func=llm_model_func,
-            embedding_func=embedding_func,
-            lightrag_kwargs=lightrag_kwargs,
         )
-        self._instances[workspace_id] = rag
+
+        self._instances[workspace_id] = lightrag
         logger.info(
-            "Initialized RAG-Anything instance for workspace %s at %s using PGVector storage",
+            "Initialized LightRAG instance for workspace %s at %s using PGVector storage",
             workspace_id,
             workspace_dir,
         )
-        return rag
+        return lightrag
 
     async def ingest_content(
         self,
@@ -204,237 +198,92 @@ class RagEngineService:
         content_list: List[dict],
         file_path: str,
         doc_id: Optional[str] = None,
+        chunks_info: Optional[List[dict]] = None,
     ) -> str:
-        """Ingest content_list for a document into RAG storage.
+        """Ingest document content into LightRAG.
 
-        Returns the rag_doc_id used by the engine.
+        Phase 9.1:
+        - If `chunks_info` is provided, we treat each entry as a macro-chunk and
+          call `ainsert_custom_chunks` so that chunk IDs are stable and can be
+          mapped back to document/segment ranges for citations.
+        - If `chunks_info` is None, we fall back to the simpler Phase 9
+          behavior: flatten content_list and let LightRAG chunk internally.
         """
-        rag = self._get_rag_instance(workspace_id)
+        lightrag = self._get_lightrag_instance(workspace_id)
 
-        # Use the document_id as RAG document identifier by default so that
+        # Ensure storages are initialized before inserting.
+        await lightrag.initialize_storages()
+
+        # Use the document_id as LightRAG document identifier by default so that
         # DB ↔ RAG mapping is straightforward.
         rag_doc_id = doc_id or str(document_id)
 
+        # Concatenate all text blocks; ignore non-text fields.
+        texts: List[str] = []
+        for item in content_list:
+            text = str(item.get("text") or "").strip()
+            if text:
+                texts.append(text)
+        full_text = "\n\n".join(texts).strip()
+
+        if not full_text:
+            raise RuntimeError(
+                f"Attempted to ingest empty content for document_id={document_id}"
+            )
+
         logger.info(
-            "Ingesting content_list for workspace=%s document_id=%s rag_doc_id=%s (%d blocks)",
+            "Ingesting document into LightRAG workspace=%s document_id=%s rag_doc_id=%s (blocks=%d, chars=%d, custom_chunks=%s)",
             workspace_id,
             document_id,
             rag_doc_id,
             len(content_list),
+            len(full_text),
+            "yes" if chunks_info else "no",
         )
 
-        await rag.insert_content_list(
-            content_list=content_list,
-            file_path=file_path,
-            doc_id=rag_doc_id,
-        )
+        if chunks_info:
+            # Use custom chunks so that chunk_ids are deterministic from chunk_text.
+            text_chunks: List[str] = [str(c.get("chunk_text") or "").strip() for c in chunks_info]
+            # Filter out empty texts to avoid LightRAG errors.
+            text_chunks = [c for c in text_chunks if c]
+            if not text_chunks:
+                raise RuntimeError(
+                    f"Attempted to ingest with empty custom chunks for document_id={document_id}"
+                )
+            await lightrag.ainsert_custom_chunks(
+                full_text=full_text,
+                text_chunks=text_chunks,
+                doc_id=rag_doc_id,
+            )
+        else:
+            # Phase 9 fallback: let LightRAG perform its own chunking.
+            await lightrag.ainsert(
+                input=full_text,
+                ids=rag_doc_id,
+                file_paths=file_path,
+            )
 
         logger.info(
-            "Completed ingest for workspace=%s document_id=%s rag_doc_id=%s",
+            "Completed LightRAG ingest for workspace=%s document_id=%s rag_doc_id=%s",
             workspace_id,
             document_id,
             rag_doc_id,
         )
         return rag_doc_id
 
-    async def get_segment_ids_for_query(
-        self,
-        workspace_id: str,
-        question: str,
-        mode: Optional[str] = None,
-    ) -> List[str]:
-        """Retrieve SEG-based segment IDs for a query without calling any LLM.
-
-        This uses LightRAG's query pipeline in \"only_need_prompt\" mode to
-        obtain the raw retrieval prompt, then extracts all
-        [SEG={document_id}:{index}] tags in order. IDs are normalized to
-        canonical UUID strings and integer indices.
-        """
-        rag = self._get_rag_instance(workspace_id)
-
-        raw_str = await self._get_raw_prompt_for_query(
-            rag=rag,
-            workspace_id=workspace_id,
-            question=question,
-            mode=mode,
-        )
-
-        # Extract normalized segment IDs in order of appearance.
-        seen: set[str] = set()
-        ordered_ids: List[str] = []
-
-        for match in _SEG_TAG_PATTERN.finditer(raw_str):
-            seg_id = match.group("id")
-            if not seg_id:
-                continue
-            parts = seg_id.split(":", 1)
-            if len(parts) != 2:
-                continue
-            doc_part, seg_part = parts
-            try:
-                doc_uuid = uuid.UUID(doc_part)
-                seg_idx = int(seg_part)
-            except (ValueError, TypeError, AttributeError):
-                continue
-            normalized = f"{doc_uuid}:{seg_idx}"
-            if normalized in seen:
-                continue
-            seen.add(normalized)
-            ordered_ids.append(normalized)
-
-        logger.info(
-            "Retrieved %d unique SEG IDs for workspace=%s",
-            len(ordered_ids),
-            workspace_id,
-        )
-
-        return ordered_ids
-
-    async def _get_raw_prompt_for_query(
-        self,
-        rag: Any,
-        workspace_id: str,
-        question: str,
-        mode: Optional[str] = None,
-    ) -> str:
-        """Call LightRAG in only_need_prompt mode and return the raw prompt string."""
-
-        # Ensure LightRAG is initialized for this RAGAnything instance. This is
-        # required because lightrag.aquery() expects storages to be ready.
-        try:
-            init_result = await rag._ensure_lightrag_initialized()
-        except Exception as exc:  # noqa: BLE001
-            logger.error(
-                "Failed to initialize LightRAG for workspace=%s when retrieving segment IDs: %s",
-                workspace_id,
-                str(exc),
-            )
-            raise
-        if isinstance(init_result, dict) and not init_result.get("success", True):
-            logger.error(
-                "LightRAG initialization reported failure for workspace=%s: %s",
-                workspace_id,
-                init_result.get("error"),
-            )
-            raise RuntimeError(f"Failed to initialize RAG engine for workspace {workspace_id}")
-
-        # Build a LightRAG QueryParam with only_need_prompt=True so that the
-        # retrieval prompt is returned without generating a final answer via LLM.
-        try:
-            from lightrag import QueryParam  # type: ignore[import]
-        except ImportError as exc:  # pragma: no cover - environment/config issue
-            raise RuntimeError(
-                "LightRAG must be installed to use get_segment_ids_for_query."
-            ) from exc
-
-        query_mode = mode or self.settings.query_mode
-        query_param = QueryParam(mode=query_mode, only_need_prompt=True)
-
-        logger.info(
-            "Retrieving segment IDs (only_need_prompt) for workspace=%s mode=%s question_preview=%s",
-            workspace_id,
-            query_mode,
-            question[:80],
-        )
-
-        raw_prompt = await rag.lightrag.aquery(question, param=query_param)
-        raw_str = str(raw_prompt or "").strip()
-        # Log a truncated preview for debugging.
-        logger.info(
-            "LightRAG raw prompt for workspace=%s (first 2000 chars): %s",
-            workspace_id,
-            raw_str[:2000],
-        )
-        return raw_str
-
-    async def get_segments_for_query(
-        self,
-        workspace_id: str,
-        question: str,
-        mode: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
-        """Retrieve context segments (segment_id + text) for a query.
-
-        This calls LightRAG in only_need_prompt mode and then parses the
-        returned prompt to extract each [SEG={document_id}:{segment_index}]
-        marker together with the text that follows it up to the next marker.
-
-        The result is a list of dicts:
-        {
-          "segment_id": "doc_uuid:segment_index",
-          "document_id": "doc_uuid",
-          "segment_index": int,
-          "text": "<segment text as seen by LightRAG>",
-        }
-
-        No additional ranking or DB access is performed here; this method
-        simply reflects the context that RAG-Anything / LightRAG decided
-        to use for the query.
-        """
-        rag = self._get_rag_instance(workspace_id)
-        raw_str = await self._get_raw_prompt_for_query(
-            rag=rag,
-            workspace_id=workspace_id,
-            question=question,
-            mode=mode,
-        )
-
-        segments: List[Dict[str, Any]] = []
-
-        # Find all SEG markers and slice text between them.
-        matches = list(_SEG_TAG_PATTERN.finditer(raw_str))
-        for idx, match in enumerate(matches):
-            seg_id = match.group("id")
-            if not seg_id:
-                continue
-            parts = seg_id.split(":", 1)
-            if len(parts) != 2:
-                continue
-            doc_part, seg_part = parts
-            try:
-                doc_uuid = uuid.UUID(doc_part)
-                seg_idx = int(seg_part)
-            except (ValueError, TypeError, AttributeError):
-                continue
-
-            start = match.end()
-            end = matches[idx + 1].start() if idx + 1 < len(matches) else len(raw_str)
-            text = raw_str[start:end].strip()
-            if not text:
-                continue
-
-            segments.append(
-                {
-                    "segment_id": f"{doc_uuid}:{seg_idx}",
-                    "document_id": str(doc_uuid),
-                    "segment_index": seg_idx,
-                    "text": text,
-                }
-            )
-
-        logger.info(
-            "Parsed %d context segments from LightRAG prompt for workspace=%s",
-            len(segments),
-            workspace_id,
-        )
-
-        return segments
-
-    async def query(
+    async def query_answer(
         self,
         workspace_id: str,
         question: str,
         system_prompt: Optional[str] = None,
-        mode: str = "mix",
+        mode: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Query RAG for a workspace and return answer + sections.
+        """Query LightRAG for a workspace and return a plain-text answer.
 
-        If the underlying LLM/embedding configuration is missing (e.g. no
-        OPENAI_API_KEY), this will return a graceful fallback answer instead
-        of raising an internal error.
+        Phase 9 deliberately ignores structured citations and uses LightRAG's
+        built-in LLM pipeline as the single source of truth. If the LLM
+        configuration is missing, a graceful fallback answer is returned.
         """
-        # Guard: if no API key is configured, avoid calling into RAG-Anything
-        # which would fail anyway and surface as a 500 to clients.
         if not os.getenv("OPENAI_API_KEY"):
             logger.error(
                 "OPENAI_API_KEY is not set; skipping RAG query for workspace=%s",
@@ -445,162 +294,145 @@ class RagEngineService:
                     "Xin lỗi, engine RAG chưa được cấu hình LLM (OPENAI_API_KEY) nên hiện tại mình "
                     "chưa thể trả lời dựa trên tài liệu. Bạn hãy cấu hình khóa API trước rồi thử lại nhé."
                 ),
-                "sections": [],
             }
-        rag = self._get_rag_instance(workspace_id)
 
-        # Ensure LightRAG is initialized for this RAGAnything instance. This is
-        # required because aquery() expects a non-None lightrag, and ingestion
-        # may have been performed in a different process.
+        lightrag = self._get_lightrag_instance(workspace_id)
+
+        # Ensure storages are initialized before querying.
+        await lightrag.initialize_storages()
+
         try:
-            init_result = await rag._ensure_lightrag_initialized()
-        except Exception as exc:  # noqa: BLE001
-            logger.error(
-                "Failed to initialize LightRAG for workspace=%s: %s",
-                workspace_id,
-                str(exc),
-            )
-            raise
-        if isinstance(init_result, dict) and not init_result.get("success", True):
-            logger.error(
-                "LightRAG initialization reported failure for workspace=%s: %s",
-                workspace_id,
-                init_result.get("error"),
-            )
-            raise RuntimeError(f"Failed to initialize RAG engine for workspace {workspace_id}")
-
-        # Merge caller-provided system prompt (if any) with the default persona,
-        # and append explicit JSON instructions (in English) so that the backend
-        # can reliably extract sections + source_ids from the model output.
-        base_prompt = system_prompt or RAG_DEFAULT_SYSTEM_PROMPT
-        effective_system_prompt = (
-            base_prompt
-            + "\n\n"
-            + "You will see context passages prefixed with tags in the form:\n"
-            + "[SEG={document_id}:{segment_index}] <segment text>\n\n"
-            + "Read the text normally, but ALWAYS keep track of these SEG IDs when you reference sources.\n\n"
-            + "When possible, respond with a **SINGLE VALID JSON** object using the following structure:\n"
-            + '{\n'
-            + '  "sections": [\n'
-            + '    {\n'
-            + '      "text": "<answer section 1>",\n'
-            + '      "source_ids": ["{document_id}:{segment_index}", "..."]\n'
-            + "    },\n"
-            + '    {\n'
-            + '      "text": "<answer section 2>",\n'
-            + '      "source_ids": ["{document_id}:{segment_index}"]\n'
-            + "    }\n"
-            + "  ]\n"
-            + "}\n\n"
-            + "- Every element in source_ids MUST come from a [SEG=...] tag that appears in the context.\n"
-            + "- Do NOT invent new IDs that were not present in the context.\n"
-            + "- If you cannot fully follow this format, return the closest valid JSON you can.\n"
-            + "- If you absolutely cannot return JSON, then answer in plain text."
-        )
+            from lightrag import QueryParam  # type: ignore[import]
+        except ImportError as exc:  # pragma: no cover - environment/config issue
+            raise RuntimeError(
+                "LightRAG must be installed to use RagEngineService.query_answer."
+            ) from exc
 
         query_mode = mode or self.settings.query_mode
-
-        # RAG-Anything's aquery does not accept system_prompt directly; it would
-        # treat unknown kwargs as QueryParam and fail. Therefore we concatenate
-        # persona + JSON instructions directly into the query text.
-        combined_query = (
-            effective_system_prompt
-            + "\n\n"
-            + "User question:\n"
-            + question
-        )
+        param = QueryParam(mode=query_mode)
 
         logger.info(
-            "Querying RAG for workspace=%s mode=%s question_preview=%s",
+            "Querying LightRAG for workspace=%s mode=%s question_preview=%s",
             workspace_id,
             query_mode,
             question[:80],
         )
 
-        raw_result = await rag.aquery(
-            combined_query,
-            mode=query_mode,
+        raw = await lightrag.aquery_llm(
+            question.strip(),
+            param=param,
+            system_prompt=system_prompt,
         )
 
-        answer: str = raw_result
-        sections: List[Dict[str, Any]] = []
+        llm_resp = raw.get("llm_response", {}) if isinstance(raw, dict) else {}
+        answer = str(llm_resp.get("content") or "").strip()
 
-        # Best-effort: if the model followed the JSON instruction, parse it.
-        # Nhiều model sẽ wrap JSON trong ```json ... ```, nên ta cố gắng
-        # bóc ra phần {...} trước khi parse để tránh JSON bị show thẳng cho user.
-        candidate_payloads: List[str] = []
-        raw_str = raw_result.strip()
-        candidate_payloads.append(raw_str)
+        if not answer:
+            # If LightRAG returns no content, fall back to a safe message.
+            answer = (
+                "Xin lỗi, mình không thể tạo được câu trả lời cho câu hỏi này dựa trên tài liệu hiện có."
+            )
 
-        # Heuristic: nếu có dấu { và }, thử trích đoạn từ { đầu tiên tới } cuối cùng.
-        start_brace = raw_str.find("{")
-        end_brace = raw_str.rfind("}")
-        if start_brace != -1 and end_brace != -1 and end_brace > start_brace:
-            inner = raw_str[start_brace : end_brace + 1].strip()
-            if inner and inner != raw_str:
-                candidate_payloads.insert(0, inner)
+        return {"answer": answer}
 
-        parsed: Dict[str, Any] | None = None
-        for payload in candidate_payloads:
-            try:
-                obj = json.loads(payload)
-                if isinstance(obj, dict) and "sections" in obj:
-                    parsed = obj
-                    break
-            except (json.JSONDecodeError, TypeError):
-                continue
+    async def retrieve_context(
+        self,
+        workspace_id: str,
+        question: str,
+        mode: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Retrieve structured context (chunks) from LightRAG without generating an answer.
+
+        This is the main entrypoint for Phase 9.1 source attribution v2. It
+        wraps `LightRAG.aquery_data` and normalizes the result into a simple
+        dict containing `chunks`, `references` and `metadata`.
+        """
+        if not os.getenv("OPENAI_API_KEY"):
+            logger.error(
+                "OPENAI_API_KEY is not set; skipping RAG retrieval for workspace=%s",
+                workspace_id,
+            )
+            return {"chunks": [], "references": [], "metadata": {}}
+
+        lightrag = self._get_lightrag_instance(workspace_id)
+        await lightrag.initialize_storages()
 
         try:
-            if parsed is not None and isinstance(parsed, dict) and "sections" in parsed:
-                raw_sections = parsed.get("sections") or []
-            if isinstance(parsed, dict) and "sections" in parsed:
-                raw_sections = parsed.get("sections") or []
-                if isinstance(raw_sections, list):
-                    for sec in raw_sections:
-                        if not isinstance(sec, dict):
-                            continue
-                        text_val = sec.get("text")
-                        if not isinstance(text_val, str):
-                            continue
-                        source_ids_val = sec.get("source_ids") or []
+            from lightrag import QueryParam  # type: ignore[import]
+        except ImportError as exc:  # pragma: no cover - environment/config issue
+            raise RuntimeError(
+                "LightRAG must be installed to use RagEngineService.retrieve_context."
+            ) from exc
 
-                        source_ids_clean: List[str] = []
-                        if isinstance(source_ids_val, list):
-                            for raw_id in source_ids_val:
-                                if not isinstance(raw_id, str):
-                                    continue
-                                raw_id = raw_id.strip()
-                                if not raw_id:
-                                    continue
-                                parts = raw_id.split(":", 1)
-                                if len(parts) != 2:
-                                    continue
-                                doc_part, seg_part = parts
-                                # Chỉ chấp nhận ID có document_id là UUID hợp lệ
-                                # và segment_index là số nguyên.
-                                try:
-                                    doc_uuid = uuid.UUID(doc_part)
-                                    _ = int(seg_part)
-                                except (ValueError, AttributeError):
-                                    continue
-                                source_ids_clean.append(f"{doc_uuid}:{int(seg_part)}")
-
-                        sections.append({"text": text_val, "source_ids": source_ids_clean})
-
-                if sections:
-                    # Build answer text by joining section texts with double newlines.
-                    answer = "\n\n".join(str(sec["text"]) for sec in sections)
-        except (json.JSONDecodeError, TypeError):
-            # Model returned plain text; treat entire result as answer.
-            logger.debug("RAG query result is not valid JSON; using raw text as answer.")
+        query_mode = mode or self.settings.query_mode
+        param = QueryParam(mode=query_mode)
 
         logger.info(
-            "RAG query completed for workspace=%s (sections=%d)",
+            "Retrieving LightRAG context for workspace=%s mode=%s question_preview=%s",
             workspace_id,
-            len(sections),
+            query_mode,
+            question[:80],
         )
 
-        return {"answer": answer, "sections": sections}
+        raw = await lightrag.aquery_data(
+            question.strip(),
+            param=param,
+        )
+
+        if not isinstance(raw, dict):
+            logger.warning("Unexpected aquery_data result type: %s", type(raw))
+            return {"chunks": [], "references": [], "metadata": {}}
+
+        data = raw.get("data") or {}
+        chunks_raw = data.get("chunks") or []
+        refs_raw = data.get("references") or []
+
+        chunks: List[Dict[str, Any]] = []
+        for item in chunks_raw:
+            try:
+                chunk_id = str(item.get("chunk_id") or "").strip()
+                content = str(item.get("content") or "").strip()
+            except Exception:  # noqa: BLE001
+                continue
+            if not chunk_id or not content:
+                continue
+            chunk = {
+                "chunk_id": chunk_id,
+                "content": content,
+                "reference_id": item.get("reference_id"),
+                "file_path": item.get("file_path"),
+            }
+            chunks.append(chunk)
+
+        references: List[Dict[str, Any]] = []
+        for ref in refs_raw:
+            try:
+                reference_id = str(ref.get("reference_id") or "").strip()
+            except Exception:  # noqa: BLE001
+                continue
+            if not reference_id:
+                continue
+            references.append(
+                {
+                    "reference_id": reference_id,
+                    "file_path": ref.get("file_path"),
+                }
+            )
+
+        metadata = raw.get("metadata") or {}
+
+        logger.info(
+            "LightRAG retrieval produced %d chunks and %d references for workspace=%s",
+            len(chunks),
+            len(references),
+            workspace_id,
+        )
+
+        return {
+            "chunks": chunks,
+            "references": references,
+            "metadata": metadata,
+        }
 
     async def delete_document(self, workspace_id: str, rag_doc_id: str) -> None:
         """Delete a document from RAG storage."""

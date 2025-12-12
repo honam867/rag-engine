@@ -30,6 +30,8 @@ build/
 # OS files
 .DS_Store
 Thumbs.db
-gen-lang-client-0216585818-4e9275d968e6.json
+gen-lang-client-0790701882-72cc10d2798c.json
 rag_workspaces
 logs
+LightRAG
+RAG-Anything

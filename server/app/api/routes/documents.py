@@ -195,13 +195,23 @@ async def get_document_raw_text(
             doc = await storage_r2.download_json(raw_key)
             segments_data = build_segments_from_docai(doc=doc, full_text=full_text)
         except Exception:
-            # Fallback im lặng sang heuristic chunking nếu JSON không đọc được.
+            # Nếu JSON không đọc được, không cố gắng chia nhỏ theo heuristic nữa;
+            # thay vào đó trả về một segment duy nhất để tránh tạo cảm giác
+            # segmentation "giả".
             segments_data = []
     else:
         segments_data = []
 
     if not segments_data:
-        segments_data = chunk_full_text_to_segments(full_text)
+        # Không dùng chunk_full_text_to_segments để tránh fallback phức tạp.
+        # Trả về một segment duy nhất chứa toàn bộ text thô.
+        segments_data = [
+            {
+                "segment_index": 0,
+                "page_idx": 0,
+                "text": full_text,
+            }
+        ]
     segments: list[DocumentSegment] = [
         DocumentSegment(
             segment_index=int(seg["segment_index"]),

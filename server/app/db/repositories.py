@@ -604,3 +604,4 @@ async def delete_workspace_cascade(session: AsyncSession, workspace_id: str, use
     # workspace
     await session.execute(sa.delete(models.workspaces).where(models.workspaces.c.id == workspace_id))
     await session.commit()
+

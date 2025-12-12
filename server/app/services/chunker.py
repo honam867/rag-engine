@@ -238,12 +238,8 @@ class ChunkerService:
         self._storage_r2 = storage_r2
         self._logger = get_logger(__name__)
 
-    async def build_content_list_from_document(self, document_id: str) -> List[dict]:
-        """Build RAG-Anything content_list for a given document.
-
-        See `docs/design/phase-3-design.md` for the target format and
-        chunking strategy.
-        """
+    async def _build_ingest_chunks_impl(self, document_id: str) -> tuple[List[dict], List[dict]]:
+        """Internal helper to build content_list + chunk metadata for ingest."""
         async with self._session_factory() as session:  # type: ignore[call-arg]
             assert isinstance(session, AsyncSession)
 
@@ -288,28 +284,54 @@ class ChunkerService:
             segments = chunk_full_text_to_segments(full_text)
 
         content_list: List[dict] = []
+        chunks_info: List[dict] = []
         # Build macro-chunks for ingestion: group multiple UI segments into
         # longer text blocks, but keep [SEG=doc:idx] markers inline so that
         # retrieval prompts still contain per-segment identifiers.
         current_text_parts: List[str] = []
         current_len = 0
-        current_page_idx = 0
+        current_page_start: Optional[int] = None
+        current_page_end: Optional[int] = None
+        current_segment_start: Optional[int] = None
+        current_segment_end: Optional[int] = None
 
         def _flush_current() -> None:
-            nonlocal current_text_parts, current_len, current_page_idx
+            nonlocal current_text_parts
+            nonlocal current_len
+            nonlocal current_page_start
+            nonlocal current_page_end
+            nonlocal current_segment_start
+            nonlocal current_segment_end
             if not current_text_parts:
                 return
             text_block = "\n\n".join(current_text_parts).strip()
             if text_block:
+                page_start = current_page_start if current_page_start is not None else 0
+                page_end = current_page_end if current_page_end is not None else page_start
+                seg_start = current_segment_start if current_segment_start is not None else 0
+                seg_end = current_segment_end if current_segment_end is not None else seg_start
                 content_list.append(
                     {
                         "type": "text",
                         "text": text_block,
-                        "page_idx": current_page_idx,
+                        "page_idx": page_start,
+                    }
+                )
+                chunks_info.append(
+                    {
+                        "chunk_text": text_block,
+                        "page_start": page_start,
+                        "page_end": page_end,
+                        "segment_start_index": seg_start,
+                        "segment_end_index": seg_end,
                     }
                 )
             current_text_parts = []
             current_len = 0
+            current_page_start = None
+            current_page_end = None
+            current_segment_start = None
+            current_segment_end = None
 
         for seg in segments:
             segment_index = int(seg.get("segment_index", 0))
@@ -326,13 +348,26 @@ class ChunkerService:
             ):
                 _flush_current()
 
+            try:
+                page_idx_val = int(seg.get("page_idx", 0))
+            except (TypeError, ValueError):
+                page_idx_val = 0
+
             if not current_text_parts:
-                # First segment in a new block – use its page_idx as the
-                # representative page for the whole block.
-                try:
-                    current_page_idx = int(seg.get("page_idx", 0))
-                except (TypeError, ValueError):
-                    current_page_idx = 0
+                # First segment in a new block.
+                current_page_start = page_idx_val
+                current_page_end = page_idx_val
+                current_segment_start = segment_index
+                current_segment_end = segment_index
+            else:
+                if current_page_start is None or page_idx_val < current_page_start:
+                    current_page_start = page_idx_val
+                if current_page_end is None or page_idx_val > current_page_end:
+                    current_page_end = page_idx_val
+                if current_segment_start is None or segment_index < current_segment_start:
+                    current_segment_start = segment_index
+                if current_segment_end is None or segment_index > current_segment_end:
+                    current_segment_end = segment_index
 
             current_text_parts.append(text_with_id)
             current_len += len(text_with_id) + 2
@@ -347,4 +382,17 @@ class ChunkerService:
             len(content_list),
         )
 
+        return content_list, chunks_info
+
+    async def build_content_list_from_document(self, document_id: str) -> List[dict]:
+        """Build RAG ingest content_list for a given document (legacy API).
+
+        Phase 9.1 reuses the same logic but also needs per-chunk metadata
+        for citation mapping. See `build_ingest_chunks_from_document`.
+        """
+        content_list, _ = await self._build_ingest_chunks_impl(document_id)
         return content_list
+
+    async def build_ingest_chunks_from_document(self, document_id: str) -> tuple[List[dict], List[dict]]:
+        """Build content_list + chunk metadata for ingest (Phase 9.1)."""
+        return await self._build_ingest_chunks_impl(document_id)

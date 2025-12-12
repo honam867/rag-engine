@@ -68,22 +68,33 @@ class IngestJobService:
         file_path = f"{workspace_id}/{document_id}/{original_filename}"
 
         try:
-            # Build content_list from OCR text.
-            content_list = await self._chunker.build_content_list_from_document(document_id=document_id)
+            # Build content_list + chunk metadata from OCR text.
+            content_list, chunks_info = await self._chunker.build_ingest_chunks_from_document(
+                document_id=document_id
+            )
 
-            # Ingest into RAG engine.
+            # Ingest into RAG engine using custom chunks (LightRAG handles
+            # internal chunk IDs; we no longer persist a separate mapping).
             rag_doc_id = await self._rag_engine.ingest_content(
                 workspace_id=workspace_id,
                 document_id=document_id,
                 content_list=content_list,
                 file_path=file_path,
                 doc_id=str(document_id),
+                chunks_info=chunks_info,
             )
 
-            # Persist mapping and mark document as ingested.
+            # Persist rag_document mapping and mark document as ingested.
             async with self._session_factory() as session:  # type: ignore[call-arg]
-                await repo.insert_rag_document(session=session, document_id=document_id, rag_doc_id=rag_doc_id)
-                await repo.update_document_ingested_success(session=session, document_id=document_id)
+                await repo.insert_rag_document(
+                    session=session,
+                    document_id=document_id,
+                    rag_doc_id=rag_doc_id,
+                )
+                await repo.update_document_ingested_success(
+                    session=session,
+                    document_id=document_id,
+                )
 
             self._logger.info(
                 "Document ingested into RAG",
