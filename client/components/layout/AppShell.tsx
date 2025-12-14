@@ -10,7 +10,8 @@ import {
   LayoutDashboard,
   LogOut,
   Menu,
-  X
+  X,
+  PanelLeft
 } from "lucide-react";
 
 import { WorkspaceSidebar } from "@/features/workspaces/components/WorkspaceSidebar";
@@ -24,6 +25,7 @@ interface AppShellProps {
 export function AppShell({ children, userEmail, onSignOut }: AppShellProps) {
   const pathname = usePathname();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
   return (
     <div className="flex h-screen bg-background overflow-hidden">
@@ -46,10 +48,18 @@ export function AppShell({ children, userEmail, onSignOut }: AppShellProps) {
       {/* Sidebar */}
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-40 flex flex-col w-64 transform bg-card border-r border-border transition-transform duration-200 lg:static lg:translate-x-0",
-          isMobileMenuOpen ? "translate-x-0" : "-translate-x-full"
+          "fixed inset-y-0 left-0 z-40 flex flex-col w-64 transform bg-card border-r border-border transition-all duration-300 lg:static lg:translate-x-0",
+          isMobileMenuOpen ? "translate-x-0" : "-translate-x-full",
+          !isSidebarOpen && "lg:w-0 lg:border-none lg:overflow-hidden"
         )}
       >
+        <div className="hidden lg:flex items-center justify-between p-4 border-b h-14 shrink-0">
+            <span className="font-semibold">RAG Engine</span>
+            <Button variant="ghost" size="icon" onClick={() => setIsSidebarOpen(false)} className="h-8 w-8">
+                <PanelLeft className="h-4 w-4" />
+            </Button>
+        </div>
+
         <div className="flex-1 flex flex-col min-h-0">
              <WorkspaceSidebar />
         </div>
@@ -72,7 +82,14 @@ export function AppShell({ children, userEmail, onSignOut }: AppShellProps) {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-hidden flex flex-col bg-background">
+      <main className="flex-1 overflow-hidden flex flex-col bg-background relative">
+           {!isSidebarOpen && (
+               <div className="absolute top-3 left-3 z-50 hidden lg:block">
+                   <Button variant="outline" size="icon" onClick={() => setIsSidebarOpen(true)} className="h-8 w-8 bg-background shadow-sm">
+                       <PanelLeft className="h-4 w-4" />
+                   </Button>
+               </div>
+           )}
            {children}
       </main>
     </div>

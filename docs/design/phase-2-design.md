@@ -159,7 +159,21 @@ Chi tiết logic `process_single_job(job_id)`:
    - Sử dụng `file.mime_type` hoặc suy ra từ filename (backup).
 4. **Gọi Document AI**:
    - `result = await docai_client.process_document_ocr(file_bytes, mime_type)`.
-   - `full_text = result["text"]` (hoặc tương đương) – xử lý trường hợp không có text → coi là lỗi.
+   - Xây dựng `full_text` bằng helper layout-aware:
+
+     ```python
+     full_text = build_full_text_from_ocr_result(parser_type=job.parser_type, doc=result)
+     ```
+
+     - Với `parser_type = 'gcp_docai'`:
+       - Dùng `pages.tables`, `paragraphs`, `layout.text_anchor` để:
+         - Giữ thứ tự đọc giữa paragraph và bảng.
+         - Render từng bảng thành nhiều dòng, mỗi dòng là một row:
+           - Mỗi cell nối bằng `" | "` để cột dễ nhận biết trong text.
+       - Nếu vì lý do nào đó không có layout hợp lệ → fallback `result["text"]`.
+     - Với parser khác (OCR service khác trong tương lai) → nếu chưa có builder riêng thì cứ lấy `result["text"]`.
+
+   - Nếu `full_text` rỗng → coi là lỗi.
 5. **Lưu kết quả**:
    - `documents.docai_full_text = full_text`.
    - Tạo key JSON raw: `key = f"docai-raw/{document_id}.json"`.

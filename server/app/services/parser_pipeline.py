@@ -30,6 +30,7 @@ from server.app.core.event_bus import event_bus
 from server.app.db import models, repositories as repo
 from server.app.services import storage_r2
 from server.app.services.docai_client import DocumentAIClient, PermanentDocumentAIError
+from server.app.services.ocr_text_builder import build_full_text_from_ocr_result
 
 
 class ParserPipelineService:
@@ -58,6 +59,7 @@ class ParserPipelineService:
 
             document_id = str(job["document_id"])
             retry_count = int(job.get("retry_count", 0) or 0)
+            parser_type = (job.get("parser_type") or "").strip()
 
             # Load workspace + owner for realtime notifications.
             doc_stmt = (
@@ -115,7 +117,10 @@ class ParserPipelineService:
 
             # Call Document AI.
             doc = await self._docai_client.process_document_ocr(file_bytes=file_bytes, mime_type=mime_type)
-            full_text = doc.get("text", "") or ""
+            # Build layout-aware full_text from OCR result. For the current
+            # implementation, parser_type is always gcp_docai; in the future
+            # other OCR engines can plug into the same interface.
+            full_text = build_full_text_from_ocr_result(parser_type=parser_type, doc=doc)
             if not full_text:
                 raise RuntimeError("Document AI returned empty text")
 

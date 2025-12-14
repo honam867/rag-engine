@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams, usePathname } from "next/navigation";
 import { Send, Sparkles, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -11,9 +11,12 @@ import { useWorkspaceDocuments } from "@/features/documents/hooks/useDocuments";
 import { useCreateConversation } from "@/features/conversations/hooks/useConversations";
 import { RecentConversations } from "@/features/conversations/components/RecentConversations";
 import { WorkspaceDocumentsPanel } from "@/features/documents/components/WorkspaceDocumentsPanel";
+import { DocumentRawTextViewer } from "@/features/documents/components/DocumentRawTextViewer";
 
 export default function WorkspaceDashboardPage() {
   const params = useParams();
+  const searchParams = useSearchParams();
+  const pathname = usePathname();
   const workspaceId = params.workspaceId as string;
   const router = useRouter();
   
@@ -22,6 +25,21 @@ export default function WorkspaceDashboardPage() {
 
   const { data: documents, isLoading: isLoadingDocs } = useWorkspaceDocuments(workspaceId);
   const createConvMutation = useCreateConversation(workspaceId);
+
+  // Viewer Logic
+  const documentId = searchParams.get("documentId");
+  
+  const handleDocumentClick = (docId: string) => {
+    const newParams = new URLSearchParams(searchParams.toString());
+    newParams.set("documentId", docId);
+    router.replace(`${pathname}?${newParams.toString()}`);
+  };
+
+  const handleCloseViewer = () => {
+    const newParams = new URLSearchParams(searchParams.toString());
+    newParams.delete("documentId");
+    router.replace(`${pathname}?${newParams.toString()}`);
+  };
 
   const hasDocuments = documents && documents.length > 0;
 
@@ -101,10 +119,32 @@ export default function WorkspaceDashboardPage() {
                     <RecentConversations workspaceId={workspaceId} />
 
                     {/* 3. Documents Panel (New) */}
-                    <WorkspaceDocumentsPanel workspaceId={workspaceId} />
+                    <WorkspaceDocumentsPanel 
+                        workspaceId={workspaceId} 
+                        onDocumentClick={handleDocumentClick}
+                    />
 
                 </div>
             </ScrollArea>
+        </div>
+
+        {/* 4. Document Viewer (Right Panel) */}
+        <div 
+            className={`
+                border-l bg-background transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] overflow-hidden flex flex-col
+                ${documentId ? "w-[0px] lg:w-[500px] xl:w-[600px] opacity-100" : "w-0 opacity-0"}
+            `}
+        >
+            {documentId && (
+                <div className="h-full w-[500px] xl:w-[600px] flex flex-col"> 
+                    <DocumentRawTextViewer 
+                        workspaceId={workspaceId}
+                        documentId={documentId}
+                        documentTitle="Document"
+                        onClose={handleCloseViewer}
+                    />
+                </div>
+            )}
         </div>
     </div>
   );

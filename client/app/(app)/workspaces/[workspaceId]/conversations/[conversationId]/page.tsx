@@ -1,8 +1,8 @@
 "use client";
 
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useState } from "react";
 import { useParams, useRouter, useSearchParams, usePathname } from "next/navigation";
-import { MessageSquare, ArrowLeft } from "lucide-react";
+import { MessageSquare, ArrowLeft, PanelRight } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ChatMessageList } from "@/features/messages/components/ChatMessageList";
 import { ChatInput } from "@/features/messages/components/ChatInput";
@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Citation } from "@/features/messages/api/messages";
 import { ConversationSidebar } from "@/features/conversations/components/ConversationSidebar";
 import { DocumentRawTextViewer } from "@/features/documents/components/DocumentRawTextViewer";
+import { cn } from "@/lib/utils";
 
 export default function ConversationPage() {
   const params = useParams();
@@ -25,6 +26,7 @@ export default function ConversationPage() {
   
   const bottomRef = useRef<HTMLDivElement>(null);
   const hasSentInitialRef = useRef(false);
+  const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(true);
 
   // Viewer Logic
   const documentId = searchParams.get("documentId");
@@ -96,6 +98,14 @@ export default function ConversationPage() {
                 </Button>
                 <span className="font-semibold text-sm">Conversation</span>
             </div>
+            <Button 
+                variant="ghost" 
+                size="icon" 
+                onClick={() => setIsRightSidebarOpen(!isRightSidebarOpen)}
+                className={cn("text-muted-foreground hover:text-foreground", !isRightSidebarOpen && "bg-muted/10")}
+            >
+                <PanelRight className="h-5 w-5" />
+            </Button>
           </div>
 
           {/* Messages */}
@@ -138,7 +148,16 @@ export default function ConversationPage() {
       </div>
 
       {/* 2. Sidebar (Right) */}
-      <ConversationSidebar />
+      <div 
+        className={cn(
+            "transition-all duration-300 ease-in-out flex flex-col overflow-hidden",
+            isRightSidebarOpen ? "w-[300px] opacity-100" : "w-0 opacity-0"
+        )}
+      >
+        <div className="w-[300px] h-full flex flex-col">
+            <ConversationSidebar />
+        </div>
+      </div>
 
       {/* 3. Document Viewer (Far Right) */}
       <div 

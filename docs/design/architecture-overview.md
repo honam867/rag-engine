@@ -95,8 +95,9 @@ Lưu ý: các phiên bản thiết kế trước đây dùng RAG‑Anything; imp
   |---> For each job:
   |        - load file metadata
   |        - storage_r2.download_file(...)
-  |        - docai_client.process_document_ocr(...)
-  |        - documents.docai_full_text = text
+  |        - docai_client.process_document_ocr(...)  # trả về Document (dict)
+  |        - full_text = build_full_text_from_ocr_result(parser_type=job.parser_type, doc=result)
+  |        - documents.docai_full_text = full_text  # với gcp_docai: text đã được rebuild theo layout (bảng, paragraph)
   |        - upload JSON -> R2 (docai-raw/{document_id}.json)
   |        - documents.docai_raw_r2_key = that key
   |        - documents.status = 'parsed'

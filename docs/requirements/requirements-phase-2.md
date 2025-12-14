@@ -5,9 +5,9 @@
 - Tích hợp **Google Cloud Document AI – Enterprise Document OCR** làm parser chính.
 - Thiết kế & triển khai **parser pipeline** xử lý `parse_jobs` ở background (worker):
   - Lấy file từ Cloudflare R2.
-  - Gọi Document AI (chỉ OCR, chưa dùng Layout Parser).
+  - Gọi Document AI (sử dụng cả OCR + layout cơ bản như pages/tables/paragraphs).
   - Lưu lại:
-    - `docai_full_text` (full text đã OCR) trong DB.
+    - `docai_full_text` (full text đã OCR, được rebuild lại dựa trên layout để giữ cấu trúc bảng/đoạn ở mức cơ bản) trong DB.
     - `docai_raw_r2_key` (key tới JSON raw của Document AI trên R2).
 - Định nghĩa rõ **interface parser** để Phase 3 có thể dùng output này build `content_list` và ingest vào RAG Engine.
 
@@ -15,16 +15,18 @@
 
 ---
 
-## 2. Dịch vụ parser: Google Cloud Document AI (OCR)
+## 2. Dịch vụ parser: Google Cloud Document AI (OCR + layout cơ bản)
 
 - Sử dụng **Google Cloud Document AI – Enterprise Document OCR Processor**:
   - Tập trung vào việc **nhận dạng text** chính xác từ PDF/ảnh.
-  - Không bật Layout Parser ở Phase 2 (để đơn giản & tiết kiệm chi phí).
+  - Tận dụng thông tin layout có sẵn (pages, tables, paragraphs, `text_anchor`) để build lại `docai_full_text` theo đúng thứ tự đọc và giữ cấu trúc bảng ở mức text (cột được phân tách bằng separator).
 - Đầu vào:
   - File tài liệu (PDF/ảnh) đã được upload lên Cloudflare R2 ở Phase 1.
 - Đầu ra (từ Document AI):
   - `Document.text`: full text của tài liệu sau OCR.
-  - Cấu trúc cơ bản (pages, paragraphs, tokens, …) – Phase 2 chỉ dùng tối thiểu, sẽ tận dụng sâu hơn ở Phase 3.
+  - Cấu trúc (pages, tables, paragraphs, tokens, …).
+    - Phase 2 **đã** dùng thông tin này để rebuild `docai_full_text` có layout tốt hơn (đặc biệt với bảng).
+    - Phase sau vẫn có thể tận dụng sâu hơn nếu cần (ví dụ table schema, form fields).
 
 Trong kiến trúc, ta coi Document AI như **một service bên ngoài**:
 
@@ -39,7 +41,9 @@ Trong kiến trúc, ta coi Document AI như **một service bên ngoài**:
 Thêm 2 cột:
 
 - `docai_full_text` (TEXT, nullable):
-  - Lưu **full text** từ `Document.text` (sau OCR).
+  - Lưu **full text** đã được build từ kết quả OCR:
+    - Với `parser_type = 'gcp_docai'`: dùng layout (tables/paragraphs) để rebuild text giữ cấu trúc ở mức cơ bản.
+    - Với parser khác (nếu chưa có builder riêng): fallback từ `Document.text`.
   - Dùng cho:
     - Re‑chunk, re‑ingest vào RAG mà không phải gọi lại Document AI.
     - Debug, export nội dung text.
@@ -134,9 +138,19 @@ Worker (có thể là một process độc lập hoặc một task loop trong ba
 3. Với mỗi job:
    - Lấy `document_id` → load `files.r2_key` tương ứng.
    - Gọi `storage_r2.download_file(r2_key)` để lấy file bytes.
-   - Gọi `docai_client.process_document_ocr(file_bytes)` để nhận `Document`.
+   - Gọi `docai_client.process_document_ocr(file_bytes)` để nhận `Document` (dict).
    - Từ `Document`:
-     - Lấy `Document.text` → ghi vào `documents.docai_full_text`.
+     - Gọi helper layout-aware, ví dụ:
+
+       ```python
+       full_text = build_full_text_from_ocr_result(parser_type=job.parser_type, doc=result)
+       ```
+
+       - Với `parser_type = 'gcp_docai'`:
+         - Dùng thông tin layout của Google Document AI (`pages.tables`, `paragraphs`, `text_anchor`) để rebuild text theo thứ tự đọc, giữ cấu trúc bảng bằng cách nối từng cell bằng separator (ví dụ `" | "`).
+       - Với parser khác (chưa cấu hình riêng) → fallback: dùng `result["text"]`.
+
+     - Ghi `full_text` vào `documents.docai_full_text`.
      - Serialize `Document` → JSON → `storage_r2.upload_json(json, key='docai-raw/{document_id}.json')`.
      - Ghi `documents.docai_raw_r2_key = 'docai-raw/{document_id}.json'`.
    - Cập nhật:
@@ -198,4 +212,3 @@ Phase 2 như vậy là một **bước đệm rõ ràng giữa “file gốc” 
 
 - Thiết kế chiến lược chunking → `content_list`.
 - Gắn với RAG‑Anything (hoặc engine khác) mà không phải lo parser/OCR nữa.
-

@@ -11,9 +11,10 @@ import { DeleteConfirmDialog } from "@/components/ui/delete-confirm-dialog";
 
 interface Props {
   workspaceId: string;
+  onDocumentClick?: (documentId: string) => void;
 }
 
-export function WorkspaceDocumentsPanel({ workspaceId }: Props) {
+export function WorkspaceDocumentsPanel({ workspaceId, onDocumentClick }: Props) {
   const { data: documents, isLoading } = useWorkspaceDocuments(workspaceId);
   const { mutateAsync: upload, isPending } = useUploadDocuments(workspaceId);
   const { mutateAsync: deleteDocument, isPending: isDeleting } = useDeleteDocument(workspaceId);
@@ -83,8 +84,9 @@ export function WorkspaceDocumentsPanel({ workspaceId }: Props) {
             return (
                 <div 
                     key={doc.id} 
-                    className="group relative flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-accent/50 transition-colors cursor-default"
+                    className="group relative flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-accent/50 transition-colors cursor-pointer"
                     title={`${doc.title} - ${status.label}`}
+                    onClick={() => onDocumentClick?.(doc.id)}
                 >
                     <div className="flex items-center gap-3 min-w-0 overflow-hidden flex-1">
                         <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
