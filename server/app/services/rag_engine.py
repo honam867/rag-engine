@@ -16,6 +16,17 @@ from server.app.core.logging import get_logger
 logger = get_logger(__name__)
 
 
+DEEP_RAG_USER_PROMPT = (
+    "When answering the user query: "
+    "1) Provide a detailed, step-by-step answer grounded only in the provided context; "
+    "2) Add 1–3 short insights that highlight important patterns, caveats, or implications for the user; "
+    "3) Add a short 'Follow-up questions' subsection with 2–3 concrete questions the user could ask to go deeper. "
+    "Place the 'Follow-up questions' subsection before the `### References` section. "
+    "If the context does not contain enough information to answer a part of the question, explicitly say that this "
+    "information is not present in the context instead of guessing."
+)
+
+
 def _infer_embedding_dim(model_name: str) -> int:
     """Best-effort mapping from embedding model name → vector dimension.
 
@@ -131,6 +142,7 @@ class RagEngineService:
         llm_model_name = self.settings.llm_model
         embedding_model_name = self.settings.embedding_model
         embedding_dim = _infer_embedding_dim(embedding_model_name)
+        llm_temperature = getattr(self.settings, "llm_temperature", 0.2)
 
         if not api_key:
             logger.warning(
@@ -146,6 +158,9 @@ class RagEngineService:
             """Wrapper around LightRAG's OpenAI helper."""
             if history_messages is None:
                 history_messages = []
+            # Ensure a default temperature for all RAG LLM calls to keep
+            # answers deterministic and grounded in retrieved context.
+            kwargs.setdefault("temperature", llm_temperature)
             return openai_complete_if_cache(
                 llm_model_name,
                 prompt,
@@ -310,6 +325,9 @@ class RagEngineService:
 
         query_mode = mode or self.settings.query_mode
         param = QueryParam(mode=query_mode)
+        # Instruct LightRAG's prompt builder to generate answers that are
+        # more detailed, with extra insights and follow-up questions.
+        param.user_prompt = DEEP_RAG_USER_PROMPT
 
         logger.info(
             "Querying LightRAG for workspace=%s mode=%s question_preview=%s",

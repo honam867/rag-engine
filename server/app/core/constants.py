@@ -28,6 +28,7 @@ PARSE_JOB_STATUS_FAILED = "failed"
 
 # Parser types
 PARSER_TYPE_GCP_DOCAI = "gcp_docai"
+PARSER_TYPE_RAW_TEXT = "raw_text"
 
 # RAG / chat persona
 # System prompt used when querying the RAG engine. It can be refined

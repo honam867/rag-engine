@@ -72,12 +72,15 @@ class RagSettings(BaseSettings):
     # Base directory where per-workspace LightRAG data will be stored.
     # Each workspace will use a subdirectory of this path.
     working_dir: str = "./rag_workspaces"
-    # Default query mode for RAG-Anything (e.g. "mix", "hybrid", "local").
+    # Default query mode for RAG-Anything / LightRAG (e.g. "mix", "hybrid", "local").
     query_mode: str = "mix"
-    # Logical model names for LLM and embeddings used by RAG-Anything.
+    # Logical model names for LLM and embeddings used by RAG-Anything / LightRAG.
     # These are passed through to the underlying client implementation.
     llm_model: str = "gpt-4o-mini"
     embedding_model: str = "text-embedding-3-large"
+    # Default temperature for the LightRAG LLM calls.
+    # Lower values keep answers more deterministic and grounded in retrieved context.
+    llm_temperature: float = 0.4
 
 
 class AnswerSettings(BaseSettings):

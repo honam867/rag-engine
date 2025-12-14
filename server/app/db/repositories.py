@@ -138,15 +138,20 @@ async def create_file(
     return _row_to_mapping(row)
 
 
-async def create_parse_job(session: AsyncSession, document_id: str) -> Mapping[str, Any]:
+async def create_parse_job(
+    session: AsyncSession,
+    document_id: str,
+    parser_type: str | None = None,
+) -> Mapping[str, Any]:
     job_id = new_uuid()
+    parser_type = parser_type or PARSER_TYPE_GCP_DOCAI
     stmt = (
         sa.insert(models.parse_jobs)
         .values(
             id=job_id,
             document_id=document_id,
             status=PARSE_JOB_STATUS_QUEUED,
-            parser_type=PARSER_TYPE_GCP_DOCAI,
+            parser_type=parser_type,
         )
         .returning(models.parse_jobs)
     )
@@ -604,4 +609,3 @@ async def delete_workspace_cascade(session: AsyncSession, workspace_id: str, use
     # workspace
     await session.execute(sa.delete(models.workspaces).where(models.workspaces.c.id == workspace_id))
     await session.commit()
-

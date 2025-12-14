@@ -9,6 +9,8 @@ from server.app.core.constants import (
     DOCUMENT_STATUS_PARSED,
     DOCUMENT_STATUS_PENDING,
     PARSE_JOB_STATUS_QUEUED,
+    PARSER_TYPE_GCP_DOCAI,
+    PARSER_TYPE_RAW_TEXT,
 )
 from server.app.core.event_bus import notify_parse_job_created
 from server.app.core.realtime import send_event_to_user
@@ -33,6 +35,37 @@ router = APIRouter(prefix="/api/workspaces/{workspace_id}/documents")
 
 def _to_document(row: dict) -> Document:
     return Document.model_validate(row)
+
+
+def _detect_parser_type(original_filename: str, mime_type: str | None) -> str:
+    """Decide which parser_type to use for a newly uploaded file.
+
+    - For plain text / markdown / JSON / CSV / TSV: use raw_text parser
+      to avoid unnecessary OCR and preserve existing text structure.
+    - For everything else: fall back to gcp_docai (current default).
+    """
+    ext = Path(original_filename).suffix.lower()
+    mt = (mime_type or "").lower()
+
+    text_exts = {
+        ".txt",
+        ".md",
+        ".markdown",
+        ".json",
+        ".csv",
+        ".tsv",
+    }
+    text_mimes = {
+        "text/plain",
+        "text/markdown",
+        "application/json",
+        "text/csv",
+        "text/tab-separated-values",
+    }
+
+    if ext in text_exts or mt in text_mimes:
+        return PARSER_TYPE_RAW_TEXT
+    return PARSER_TYPE_GCP_DOCAI
 
 
 async def _ensure_workspace(session: AsyncSession, workspace_id: str, user_id: str) -> dict:
@@ -78,7 +111,12 @@ async def upload_documents(
             file_id=file_id,
         )
 
-        parse_job = await repo.create_parse_job(session=session, document_id=doc_row["id"])
+        parser_type = _detect_parser_type(original_filename, upload.content_type)
+        parse_job = await repo.create_parse_job(
+            session=session,
+            document_id=doc_row["id"],
+            parser_type=parser_type,
+        )
 
         # Best-effort realtime notifications for new document and queued parse job.
         try:

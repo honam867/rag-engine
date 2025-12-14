@@ -24,6 +24,8 @@ from server.app.core.constants import (
     PARSE_JOB_STATUS_QUEUED,
     PARSE_JOB_STATUS_RUNNING,
     PARSE_JOB_STATUS_SUCCESS,
+    PARSER_TYPE_GCP_DOCAI,
+    PARSER_TYPE_RAW_TEXT,
 )
 from server.app.core.logging import get_logger
 from server.app.core.event_bus import event_bus
@@ -105,35 +107,51 @@ class ParserPipelineService:
                 stmt = sa.select(models.files).where(models.files.c.document_id == document_id).limit(1)
                 result = await session.execute(stmt)
                 row = result.fetchone()
-                if not row:
-                    raise RuntimeError("No file metadata found for document")
-                file_row = row._mapping
+            if not row:
+                raise RuntimeError("No file metadata found for document")
+            file_row = row._mapping
 
             r2_key = file_row["r2_key"]
             mime_type = file_row["mime_type"]
+            original_filename = str(file_row.get("original_filename") or "")
 
             # Download file bytes from R2.
             file_bytes = await storage_r2.download_file(r2_key)
 
-            # Call Document AI.
-            doc = await self._docai_client.process_document_ocr(file_bytes=file_bytes, mime_type=mime_type)
-            # Build layout-aware full_text from OCR result. For the current
-            # implementation, parser_type is always gcp_docai; in the future
-            # other OCR engines can plug into the same interface.
-            full_text = build_full_text_from_ocr_result(parser_type=parser_type, doc=doc)
-            if not full_text:
-                raise RuntimeError("Document AI returned empty text")
+            # Decide branch based on parser_type.
+            normalized_parser_type = (parser_type or "").strip() or PARSER_TYPE_GCP_DOCAI
+            raw_key: str | None = None
 
-            raw_key = f"docai-raw/{document_id}.json"
-            await storage_r2.upload_json(doc, key=raw_key)
+            if normalized_parser_type == PARSER_TYPE_RAW_TEXT:
+                # Raw-text branch: do not call Document AI, just decode the file.
+                full_text = _decode_raw_text(
+                    file_bytes=file_bytes,
+                    mime_type=mime_type,
+                    original_filename=original_filename,
+                )
+            else:
+                # Call Document AI and build layout-aware full_text from OCR result.
+                doc = await self._docai_client.process_document_ocr(file_bytes=file_bytes, mime_type=mime_type)
+                full_text = build_full_text_from_ocr_result(parser_type=normalized_parser_type, doc=doc)
+                if not full_text:
+                    raise RuntimeError("Document AI returned empty text")
+
+                raw_key = f"docai-raw/{document_id}.json"
+                await storage_r2.upload_json(doc, key=raw_key)
 
             # Persist document fields and mark job success.
             async with self._session_factory() as session:  # type: ignore[call-arg]
                 await repo.update_document_parsed_success(
-                    session=session, document_id=document_id, full_text=full_text, raw_r2_key=raw_key
+                    session=session,
+                    document_id=document_id,
+                    full_text=full_text,
+                    raw_r2_key=raw_key or None,
                 )
                 await repo.mark_parse_job_success(session=session, job_id=job_id)
-            self._logger.info("parse_job processed successfully", extra={"job_id": job_id, "document_id": document_id})
+            self._logger.info(
+                "parse_job processed successfully",
+                extra={"job_id": job_id, "document_id": document_id, "parser_type": normalized_parser_type},
+            )
 
             # Realtime notifications for success.
             if user_id:
@@ -269,3 +287,18 @@ class ParserPipelineService:
             await self.process_single_job(job_id=str(job["id"]))
             processed += 1
         return processed
+
+
+def _decode_raw_text(file_bytes: bytes, mime_type: str, original_filename: str) -> str:
+    """Decode raw text files for parser_type=raw_text.
+
+    For Phase 10, we keep this intentionally simple:
+    - Assume UTF-8 with errors ignored.
+    - Do not pretty-print or transform JSON/CSV; preserve the original
+      byte sequence as text as much as possible.
+    """
+    try:
+        text = file_bytes.decode("utf-8", errors="ignore")
+    except Exception:  # noqa: BLE001
+        text = ""
+    return text.strip()
