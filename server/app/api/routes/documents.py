@@ -20,12 +20,10 @@ from server.app.schemas.documents import (
     DocumentDetail,
     DocumentListResponse,
     DocumentRawTextResponse,
-    DocumentSegment,
     ParseJobInfo,
     UploadResponse,
     UploadResponseItem,
 )
-from server.app.services.chunker import build_segments_from_docai, chunk_full_text_to_segments
 from server.app.services.rag_engine import RagEngineService
 from server.app.services import storage_r2
 from server.app.utils.ids import new_uuid
@@ -167,7 +165,6 @@ async def get_document_raw_text(
     current_user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> DocumentRawTextResponse:
-    """Return OCR'ed raw text of a document as segments for viewer."""
     await _ensure_workspace(session, workspace_id, current_user.id)
     doc_row = await repo.get_document(session, document_id=document_id, workspace_id=workspace_id)
     if not doc_row:
@@ -187,45 +184,11 @@ async def get_document_raw_text(
             detail="Document has no OCR text (docai_full_text is empty)",
         )
 
-    segments_data: list[dict]
-    # Ưu tiên dùng JSON Document AI nếu có để segmentation bám sát layout PDF.
-    raw_key = doc_row.get("docai_raw_r2_key")
-    if raw_key:
-        try:
-            doc = await storage_r2.download_json(raw_key)
-            segments_data = build_segments_from_docai(doc=doc, full_text=full_text)
-        except Exception:
-            # Nếu JSON không đọc được, không cố gắng chia nhỏ theo heuristic nữa;
-            # thay vào đó trả về một segment duy nhất để tránh tạo cảm giác
-            # segmentation "giả".
-            segments_data = []
-    else:
-        segments_data = []
-
-    if not segments_data:
-        # Không dùng chunk_full_text_to_segments để tránh fallback phức tạp.
-        # Trả về một segment duy nhất chứa toàn bộ text thô.
-        segments_data = [
-            {
-                "segment_index": 0,
-                "page_idx": 0,
-                "text": full_text,
-            }
-        ]
-    segments: list[DocumentSegment] = [
-        DocumentSegment(
-            segment_index=int(seg["segment_index"]),
-            page_idx=int(seg.get("page_idx", 0)),
-            text=str(seg["text"]),
-        )
-        for seg in segments_data
-    ]
-
     return DocumentRawTextResponse(
         document_id=doc_row["id"],
         workspace_id=doc_row["workspace_id"],
         status=status_value,
-        segments=segments,
+        text=full_text,
     )
 
 

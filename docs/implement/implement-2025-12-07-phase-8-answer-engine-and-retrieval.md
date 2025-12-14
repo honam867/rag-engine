@@ -123,8 +123,8 @@
 
     - Với mỗi document:
       - Lấy `full_text`.
-      - Nếu có `docai_raw_r2_key` → `download_json` từ R2 → `build_segments_from_docai`.
-      - Nếu không → `chunk_full_text_to_segments`.
+      - (Thiết kế cũ) Nếu có `docai_raw_r2_key` → `download_json` từ R2 → `build_segments_from_docai`. (**deprecated – implementation now always chunks directly from `docai_full_text`**)
+      - Nếu không → `chunk_full_text_to_segments`. (**design note only – current runtime lets LightRAG handle chunking from full_text**)
       - Build map `(doc_id_str, segment_index) -> {segment_id, document_id, segment_index, page_idx, text}`.
     - Trả về:
       - `ordered_segments`: list các segment theo thứ tự retrieval.
@@ -330,4 +330,3 @@ sequenceDiagram
 - Có nên tách hoàn toàn logic mapping `segment_id -> canonical segment` vào một service chung (thay vì lặp lại logic giữa AnswerEngine và helpers trong `messages.py`) nếu sau này nhiều chỗ dùng?
 - LLMClient hiện dùng `/chat/completions` với `response_format={"type": "json_object"}`; nếu chuyển sang OpenAI Responses API hoặc provider khác:
   - Cần cập nhật lại payload & parsing, nhưng interface `generate_json` vẫn giữ.
-

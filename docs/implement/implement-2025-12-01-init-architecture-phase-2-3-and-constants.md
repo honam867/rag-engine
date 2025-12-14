@@ -79,3 +79,6 @@ flowchart TD
   - Wire worker loops in `parse_worker.py` and `ingest_worker.py` to use these services.
 - When Document AI and RAG are implemented, revisit constants to add any new statuses (e.g., ingest failures) and update this log with deviations from the original design if necessary.
 
+## 7. Update 2025-12-13 – Architecture doc aligned to LightRAG
+- Updated `docs/design/architecture-overview.md` to describe the RAG engine layer as LightRAG-based instead of RAG-Anything, and clarified that the current server runtime no longer imports `raganything`.
+- Kept the overall layering (API, DB, storage, parser, RAG engine, workers, client) unchanged; this is a documentation-only alignment with the Phase 9 implementation where `rag_engine.py` wraps LightRAG directly.

@@ -1,5 +1,8 @@
 # Implement: Phase 7 – Explainable RAG & Raw Document Viewer
 
+> Note: This log documents the original segmentation-based behavior (helpers like `chunk_full_text_to_segments` and segment-based citations).  
+> In the current implementation, these helpers are **deprecated** – raw-text API returns `docai_full_text` as a single segment and ingestion passes the full OCR text into LightRAG without explicit segment building.
+
 ## 1. Summary
 - Scope: server, Phase 7.
 - Added a raw-text viewer API for parsed documents and extended the RAG query pipeline to return structured sections + citations metadata, enabling the UI to show document text and attach per-section citation “bubbles” that can be mapped back to source segments.
@@ -14,8 +17,8 @@
 
 ## 3. Files touched
 -- `server/app/services/chunker.py` – Refactored chunking into a reusable `chunk_full_text_to_segments(full_text, max_chunk_chars=1500)` helper that produces ordered segments (`segment_index`, `page_idx`, `text`), and updated `build_content_list_from_document` to reuse this helper for RAG ingestion. Later refined the helper to use a more robust, multi-step segmentation strategy (blank lines → single newlines → fixed-size windows) so that documents without clear paragraph breaks still produce multiple reasonably sized segments for the raw-text viewer and citation mapping.
-- `server/app/schemas/documents.py` – Added `DocumentSegment` and `DocumentRawTextResponse` schemas to represent raw OCR text segments per document.
-- `server/app/api/routes/documents.py` – Added `GET /api/workspaces/{workspace_id}/documents/{document_id}/raw-text` endpoint that validates workspace ownership, checks document status (`parsed`/`ingested`), chunks `docai_full_text` into segments via `chunk_full_text_to_segments`, and returns `DocumentRawTextResponse`.
+- `server/app/schemas/documents.py` – Added `DocumentSegment` and `DocumentRawTextResponse` schemas to represent raw OCR text segments per document. (**Segment-based schema is now deprecated; current implementation uses `DocumentRawTextResponse` with a single `text` field.**)
+- `server/app/api/routes/documents.py` – Added `GET /api/workspaces/{workspace_id}/documents/{document_id}/raw-text` endpoint that validates workspace ownership, checks document status (`parsed`/`ingested`), chunks `docai_full_text` into segments via `chunk_full_text_to_segments`, and returns `DocumentRawTextResponse`. (**Runtime has since been simplified to return `docai_full_text` as a single text block instead of segments[].**) 
 - `server/app/services/rag_engine.py` – Extended `RagEngineService.query` to instruct the LLM to return JSON with `sections[].text` only (no citations), parse that JSON when possible, and return `{answer, sections}` where `answer` is built by joining section texts.
 - `server/app/api/routes/messages.py` – Added server-side citation mapping: after calling `RagEngineService.query`, the background task now loads parsed/ingested documents in the workspace, chunks `docai_full_text` into segments via `chunk_full_text_to_segments`, computes a simple similarity score between each section text và mỗi segment, rồi gán citations với `document_id` (UUID thật), `segment_index`, `page_idx` và `snippet_preview` vào `metadata.sections` (và flatten vào `metadata.citations`); event `message.status_updated` gửi kèm `metadata` này cho client.
 
@@ -90,7 +93,7 @@ sequenceDiagram
   API->>DB: SELECT document (check workspace_id/status/docai_full_text)
   DB-->>API: document row
   API->>API: chunk_full_text_to_segments(docai_full_text)
-  API-->>UI: DocumentRawTextResponse (segments[])
+  API-->>UI: DocumentRawTextResponse (segments[])  <!-- deprecated; now returns `text` only -->
   UI->>U: Render segments (text viewer) with segment_index anchors
 ```
 

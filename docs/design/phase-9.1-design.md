@@ -118,13 +118,13 @@ File: `server/app/services/chunker.py`
   - `text_chunks` – mỗi phần tử là chuỗi text dùng làm chunk cho LightRAG.
   - Metadata để map chunk ↔ segments.
 
-#### 5.1.1. Xây segments (giữ nguyên Phase 7/9)
+#### 5.1.1. Xây segments (giữ nguyên Phase 7/9 – **design only, build_segments_from_docai is deprecated in current code**)
 
-- `build_segments_from_docai`:
+- `build_segments_from_docai` (**deprecated in implementation**):
   - Dùng `doc.pages[*].paragraphs[*].layout.text_anchor` / `lines`.
   - Trả về `segments[*] = { segment_index, page_idx, text }`.
-- `chunk_full_text_to_segments`:
-  - Fallback khi không có JSON.
+- `chunk_full_text_to_segments` (**deprecated in current runtime**):
+  - Fallback khi không có JSON trong thiết kế cũ; hiện tại runtime không gọi helper này nữa và để LightRAG tự xử lý chunking dựa trên full_text.
 
 #### 5.1.2. Xây text_chunks từ segments
 
@@ -492,4 +492,3 @@ Những log này hỗ trợ debug khi citation hiển thị sai.
   - Tinh chỉnh segmentation theo từng domain (bảng, báo cáo tài chính…).
   - Thêm heuristic “sub-span highlighting” (char_start/char_end) thay vì highlight cả chunk.
   - Tích hợp thêm rerank model nếu LightRAG retrieval chưa đủ tốt cho 1 workspace chứa nhiều tài liệu.
-

@@ -24,8 +24,8 @@
     - `make_segment_id(document_id: str, segment_index: int) -> str` để tạo ID ổn định cho mỗi segment (`"{document_id}:{segment_index}"`).
   - `ChunkerService.build_content_list_from_document`:
     - Trước: build `content_list` với `text = seg["text"]`, `page_idx = seg["page_idx"]`.
-    - Nay:
-      - Vẫn ưu tiên build `segments` từ Document AI JSON (`build_segments_from_docai`) hoặc fallback `chunk_full_text_to_segments`.
+    - Nay (design ban đầu):
+      - Vẫn ưu tiên build `segments` từ Document AI JSON (`build_segments_from_docai`) hoặc fallback `chunk_full_text_to_segments`. (**deprecated – runtime now passes full `docai_full_text` to LightRAG and no longer builds explicit segments**)
       - Với mỗi segment:
         - Tính `segment_index = int(seg["segment_index"])`.
         - `segment_id = make_segment_id(document_id, segment_index)`.
@@ -82,7 +82,7 @@
       - Cho mỗi document:
         - Build `segments`:
           - Nếu có `docai_raw_r2_key`: `build_segments_from_docai(doc, full_text)`.
-          - Nếu không: `chunk_full_text_to_segments(full_text)`.
+          - Nếu không: `chunk_full_text_to_segments(full_text)`. (**design-only; runtime no longer uses this helper**)
         - Cho mỗi segment:
           - Nếu `(doc_id, segment_index)` nằm trong tập đã thu thập, đưa vào `segment_lookup[(doc_id, segment_index)] = {document_id, segment_index, page_idx, text}`.
       - Với từng section:
@@ -208,4 +208,3 @@ sequenceDiagram
     - Hiển thị nhiều bong bóng citations trên một section (theo `source_ids` / `citations`).
     - Scroll + highlight đúng đoạn text thô theo `document_id + segment_index`, giống NotebookLM.
   - Không bắt buộc đổi schema, nhưng nên cập nhật để tận dụng `source_ids`.
-

@@ -11,6 +11,7 @@ from typing import Any, Dict
 
 from google.api_core.exceptions import GoogleAPIError
 from google.cloud import documentai_v1 as documentai
+from google.oauth2 import service_account
 from google.protobuf.json_format import MessageToDict
 from starlette.concurrency import run_in_threadpool
 
@@ -31,12 +32,20 @@ class DocumentAIClient:
         if not self.settings.project_id or not self.settings.location or not self.settings.ocr_processor_id:
             raise RuntimeError("Document AI settings are incomplete. Please configure GCP_PROJECT_ID, GCP_LOCATION and DOCAI_OCR_PROCESSOR_ID.")
 
-        client_options: Dict[str, Any] = {}
+        client_kwargs: Dict[str, Any] = {}
+        # If a credentials_path is configured, always build explicit service-account
+        # credentials from that file so that we do not accidentally pick up
+        # gcloud Application Default Credentials from the local environment.
         if self.settings.credentials_path:
-            client_options["client_options"] = {"quota_project_id": self.settings.project_id}
+            credentials = service_account.Credentials.from_service_account_file(
+                self.settings.credentials_path,
+                scopes=["https://www.googleapis.com/auth/cloud-platform"],
+            )
+            client_kwargs["credentials"] = credentials
+            client_kwargs["client_options"] = {"quota_project_id": self.settings.project_id}
 
-        # The SDK will pick up Application Default Credentials; we only pass client_options if needed.
-        self._client = documentai.DocumentProcessorServiceClient(**client_options)
+        # Without credentials_path, fall back to Application Default Credentials.
+        self._client = documentai.DocumentProcessorServiceClient(**client_kwargs)
         self._processor_name = self._client.processor_path(
             self.settings.project_id,
             self.settings.location,

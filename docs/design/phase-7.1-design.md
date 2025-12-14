@@ -25,7 +25,7 @@
 
 1. **Segmentation thụ động, không bám cấu trúc PDF**
    - `docai_full_text` là `document.text` từ Document AI (đã có breakline hợp lý).
-   - `chunk_full_text_to_segments(full_text, max_chunk_chars=1500)` hiện tại:
+   - `chunk_full_text_to_segments(full_text, max_chunk_chars=1500)` hiện tại (**deprecated in runtime; kept here as design background**):
      - Split theo `\n\n`, rồi fallback `\n`, rồi chia theo độ dài ký tự.
      - Không dùng JSON Document AI (`docai_raw_r2_key`) – nơi có thông tin paragraph/line với `text_anchor`.
    - Hậu quả:
@@ -98,7 +98,7 @@
      - `def chunk_full_text_to_segments(full_text: str, max_chunk_chars: int = 1500) -> list[dict]`
    - Bên trong, nếu có context (vd: JSON Document AI) sẽ:
      - Sử dụng helper mới, ví dụ:
-       - `build_segments_from_docai(doc: dict, full_text: str, max_chunk_chars: int = 1500) -> list[dict]`
+       - `build_segments_from_docai(doc: dict, full_text: str, max_chunk_chars: int = 1500) -> list[dict]` (**deprecated in current implementation; segmentation now works directly on `docai_full_text`**)
 
 2. **Logic đề xuất `build_segments_from_docai`**
 
@@ -236,7 +236,7 @@ Mục tiêu: vẫn giữ chi phí thấp (không dùng embedding server), nhưng
 
 ## 6. Kế hoạch implement (tóm tắt)
 
-1. **Segments từ Document AI JSON**
+1. **Segments từ Document AI JSON** (**deprecated – kept as historical design; current implementation does not use build_segments_from_docai**)
    - Thêm helper mới, ví dụ:
      - `build_segments_from_docai(doc: dict, full_text: str, max_chunk_chars: int = 1500) -> list[dict]`.
    - Cập nhật:
@@ -265,4 +265,3 @@ Mục tiêu: vẫn giữ chi phí thấp (không dùng embedding server), nhưng
   - Về sau, nếu cần richer UX giống NotebookLM hơn nữa (phân loại đoạn text vs bảng vs hình), có thể:
     - Bổ sung `source_type` / `block_type` vào segment & citation.
     - Sử dụng thêm metadata từ Document AI JSON (table, figure, heading).
-

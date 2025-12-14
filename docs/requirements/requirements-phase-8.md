@@ -29,7 +29,7 @@
   - Các phase trước giữ nguyên ingestion:
     - Phase 2: Document AI OCR + lưu `docai_full_text` + JSON raw.
     - Phase 3: chunker + ingest vào RAG-Anything bằng `content_list`.
-    - Phase 7.1: segmentation từ JSON (build_segments_from_docai) cho raw viewer.
+    - Phase 7.1: segmentation từ JSON (build_segments_from_docai) cho raw viewer. (**deprecated – raw viewer now exposes docai_full_text as-is**)
     - Phase 7.2: segment_id `[SEG={document_id}:{segment_index}]` đã embed vào `content_list`.
 
 - **Out of scope**
@@ -255,7 +255,7 @@ Các endpoint khác (`/raw-text`, `/documents`, `/workspaces`) không đổi beh
      - Ưu tiên dùng API chính thức (nếu có).
      - Nếu không, define rõ cách đọc từ PGVector tables.
    - Chuẩn hóa thành `RetrievedSegment[]` (segment_id, document_id, segment_index, page_idx, text, score).
-   - Đảm bảo reuse segmentation từ Phase 7.1 (`build_segments_from_docai`) khi cần.
+   - Đảm bảo reuse segmentation từ Phase 7.1 (`build_segments_from_docai`) khi cần. (**deprecated in current implementation**)
 
 2. **Thiết kế & implement Answer Orchestrator**
    - Tạo service mới (ví dụ: `AnswerEngineService`):
@@ -301,7 +301,7 @@ Các endpoint khác (`/raw-text`, `/documents`, `/workspaces`) không đổi beh
 - Phase 2, 3, 7, 7.1, 7.2:
   - **Vẫn giữ**:
     - Document AI OCR + JSON raw trên R2.
-    - Segmentation từ JSON (`build_segments_from_docai`) là nguồn chuẩn cho `segment_index`.
+    - Segmentation từ JSON (`build_segments_from_docai`) là nguồn chuẩn cho `segment_index`. (**deprecated – segment_index now comes from chunking docai_full_text directly**)
     - Ingest vào RAG-Anything với text prefix `[SEG={document_id}:{segment_index}]`.
     - Raw text viewer `/raw-text`.
   - **Không sử dụng nữa trong pipeline chính Phase 8**:
@@ -312,4 +312,3 @@ Các endpoint khác (`/raw-text`, `/documents`, `/workspaces`) không đổi beh
   - Khi phải trade-off “luôn có citations” vs “độ chính xác”:
     - **Primary citations** (bong bóng số) chỉ được tạo khi có ID match với `retrieved_segments`.
     - Thông tin retrieve thêm (top-k segments) có thể log riêng hoặc expose dưới dạng khác, nhưng không bắt user hiểu đó là “nguồn chắc chắn”.
-

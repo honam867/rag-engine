@@ -179,7 +179,7 @@ def make_segment_id(document_id: str, segment_index: int) -> str:
   - Ở đoạn build `segments`:
     - Hiện tại:
       ```python
-      segments = build_segments_from_docai(...) or chunk_full_text_to_segments(...)
+      segments = build_segments_from_docai(...) or chunk_full_text_to_segments(...)  // **deprecated: current implementation only uses chunk_full_text_to_segments on docai_full_text**
       content_list = [
           {"type": "text", "text": seg["text"], "page_idx": seg["page_idx"]}
           for seg in segments

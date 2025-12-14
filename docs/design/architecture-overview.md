@@ -1,7 +1,8 @@
 # rag-engine – Architecture Overview
 
-Mục tiêu: mô tả kiến trúc **nền móng** cho app mới sử dụng RAG‑Anything + Document AI + Supabase + Cloudflare R2.  
-File này là source of truth high‑level; các file tech design theo phase sẽ bám theo kiến trúc này.
+Mục tiêu: mô tả kiến trúc **nền móng** cho app mới sử dụng LightRAG + Document AI + Supabase + Cloudflare R2.  
+File này là source of truth high‑level; các file tech design theo phase sẽ bám theo kiến trúc này.  
+Lưu ý: các phiên bản thiết kế trước đây dùng RAG‑Anything; implementation hiện tại đã chuyển hoàn toàn sang LightRAG và không còn import `raganything` trong runtime server.
 
 ---
 
@@ -28,13 +29,13 @@ File này là source of truth high‑level; các file tech design theo phase s�
 - Sub‑layer 2: **Parser pipeline**  
   - Worker đọc `parse_jobs`, tải file từ R2, gọi Document AI, lưu `docai_full_text` + JSON raw key.  
 - Sub‑layer 3: **Chunker**  
-  - Dựa trên `docai_full_text` (và JSON raw nếu cần) → build `content_list` chuẩn RAG‑Anything.
+  - Dựa trên `docai_full_text` (flattened OCR text) → chia thành các đoạn vừa phải và build `content_list` chuẩn cho LightRAG.
 
-**5. RAG Engine Layer (RAG‑Anything)**  
-- Import như library, bọc trong module `rag_engine`.  
+**5. RAG Engine Layer (LightRAG)**  
+- Import LightRAG như library, bọc trong module `rag_engine`.  
 - Chịu trách nhiệm:
-  - Ingest `content_list` → LightRAG (embeddings, vector store, graph).  
-  - Query RAG (`aquery`) với system prompt phù hợp persona.  
+  - Ingest `content_list` → LightRAG (embeddings, vector store, graph trên Supabase PGVector).  
+  - Query RAG (retrieval + prompt-only) với system prompt phù hợp persona.  
 - Không biết gì về Supabase, R2, Document AI; chỉ nhận input là `content_list` / `query`.
 
 **6. Jobs / Worker Layer**  
@@ -118,10 +119,10 @@ File này là source of truth high‑level; các file tech design theo phase s�
   |          )
   |             |
   |             |  -> RagEngineService._get_instance(workspace_id)
-  |             |     (tạo hoặc lấy RAGAnything/LightRAG cho workspace đó,
+  |             |     (tạo hoặc lấy LightRAG cho workspace đó,
   |             |      storage chính là Supabase PGVector)
   |             v
-  |           [RAGAnything / LightRAG for this workspace]
+  |           [LightRAG for this workspace]
   |             |
   |             |---> insert_content_list(...)
   |             v
@@ -147,11 +148,11 @@ File này là source of truth high‑level; các file tech design theo phase s�
   |---> call RagEngineService.query(workspace_id, question, system_prompt)
   |         |
   |         |  -> RagEngineService._get_instance(workspace_id)
-  |         |     (dùng lại instance đã ingest tài liệu của workspace đó)
+  |         |     (dùng lại LightRAG instance đã ingest tài liệu của workspace đó)
   |         v
-  |       [RAGAnything / LightRAG for this workspace]
+  |       [LightRAG for this workspace]
   |         |
-  |         |---> aquery(question, mode="mix", system_prompt=...)
+  |         |---> retrieval + prompt building (không dùng LLM nội bộ của RAG-Anything)
   |         v
   |<-------- answer + citations(file_path, page_idx)
   |
@@ -164,7 +165,7 @@ Lưu ý quan trọng:
 
 - Raw file & JSON Document AI luôn nằm trên **R2**;  
   RAG chỉ làm việc với `content_list` đã chunk + index trong Supabase Postgres (PGVector).  
-- Mỗi `workspace_id` có instance RAG‑Anything/LightRAG riêng (hoặc namespace riêng),  
+- Mỗi `workspace_id` có LightRAG instance riêng (hoặc namespace riêng),  
   nên tri thức giữa các workspace không bị lẫn nhau.
 
 ---
@@ -208,7 +209,7 @@ server/
       docai_client.py      # Lớp wrap Google Cloud Document AI OCR
       parser_pipeline.py   # Logic xử lý parse_jobs: lấy file → gọi docai → update documents
       chunker.py           # build_content_list_from_document(document_id)
-      rag_engine.py        # Wrap RAG‑Anything: ingest_content, query, delete_document
+      rag_engine.py        # Wrap LightRAG: ingest_content, retrieval helpers, delete_document (logical)
       jobs_ingest.py       # Logic ingest documents đã parsed vào RAG (Phase 3)
 
     workers/
@@ -238,7 +239,7 @@ Nguyên tắc:
 
 - **Source of truth cho domain**: Postgres schema (file planning).  
   - Mọi service/API phải align với schema này.  
-- **Source of truth cho knowledge**: RAG‑Anything/LightRAG storage (vector/graph) – nhưng luôn được điều khiển bởi DB:
+- **Source of truth cho knowledge**: LightRAG storage (vector/graph) – nhưng luôn được điều khiển bởi DB:
   - `rag_documents` giữ mapping `document_id ↔ rag_doc_id`.  
 - Pattern chung khi thiết kế phần mới:
   1. Bắt đầu từ **DB & service layer** (repositories + services).

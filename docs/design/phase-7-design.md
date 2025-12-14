@@ -1,5 +1,8 @@
 # rag-engine – Tech Design (Phase 7: Explainable RAG & Raw Document Viewer)
 
+> Note: This document describes the original segmentation-based design (helpers like `chunk_full_text_to_segments`, segment-based citations).  
+> In the current implementation, these helpers are **deprecated** – raw-text viewer exposes `docai_full_text` as-is and ingestion passes the full OCR text to LightRAG without building explicit segments.
+
 **Mục tiêu**: Chuyển `docs/requirements/requirements-phase-7.md` thành thiết kế kỹ thuật cụ thể, bám sát kiến trúc `architecture-overview.md` và các phase trước. Phase 7 tập trung vào:
 - Expose text thô (đã OCR) của document cho UI.
 - Chuẩn hóa “segments” cho viewer và mapping.
@@ -258,17 +261,11 @@ File: `server/app/schemas/documents.py`
 Thêm các model:
 
 ```python
-class DocumentSegment(BaseModel):
-    segment_index: int
-    page_idx: int
-    text: str
-
-
 class DocumentRawTextResponse(BaseModel):
     document_id: UUID
     workspace_id: UUID
     status: str
-    segments: list[DocumentSegment]
+    text: str
 ```
 
 Endpoint `/raw-text` sẽ dùng `DocumentRawTextResponse` làm `response_model`.

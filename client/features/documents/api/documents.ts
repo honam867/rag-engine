@@ -12,17 +12,11 @@ export interface DocumentListResponse {
   items: Document[];
 }
 
-export interface DocumentSegment {
-  segment_index: number;
-  page_idx: number;
-  text: string;
-}
-
 export interface DocumentRawTextResponse {
   document_id: string;
   workspace_id: string;
   status: string;
-  segments: DocumentSegment[];
+  text: string;
 }
 
 export async function fetchDocuments(workspaceId: string): Promise<Document[]> {

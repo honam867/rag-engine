@@ -42,14 +42,8 @@ class UploadResponse(BaseModel):
     items: list[UploadResponseItem]
 
 
-class DocumentSegment(BaseModel):
-    segment_index: int
-    page_idx: int
-    text: str
-
-
 class DocumentRawTextResponse(BaseModel):
     document_id: UUID
     workspace_id: UUID
     status: str
-    segments: list[DocumentSegment]
+    text: str

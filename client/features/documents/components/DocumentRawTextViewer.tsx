@@ -29,13 +29,11 @@ export function DocumentRawTextViewer({
   const docFromList = documents?.find(d => d.id === documentId);
   const displayTitle = docFromList?.title || initialTitle || "Document Viewer";
 
-  // Auto-scroll to highlighted segment
+  // Auto-scroll when a highlight index is provided (legacy API).
+  // Since the raw text is now a single block, we simply scroll to top.
   useEffect(() => {
     if (highlightSegmentIndex !== null && highlightSegmentIndex !== undefined && !isLoading && data) {
-      const element = document.getElementById(`segment-${highlightSegmentIndex}`);
-      if (element) {
-        element.scrollIntoView({ behavior: "smooth", block: "center" });
-      }
+      window.scrollTo({ top: 0, behavior: "smooth" });
     }
   }, [highlightSegmentIndex, isLoading, data]);
 
@@ -78,21 +76,9 @@ export function DocumentRawTextViewer({
           <ScrollArea className="h-full w-full">
             <div className="p-8 max-w-3xl mx-auto">
               <div className="space-y-4 text-base leading-relaxed text-stone-800 selection:bg-yellow-200 selection:text-stone-900">
-                {data?.segments.map((seg) => {
-                  const isHighlighted = highlightSegmentIndex === seg.segment_index;
-                  return (
-                    <p
-                      key={seg.segment_index}
-                      id={`segment-${seg.segment_index}`}
-                      className={cn(
-                        "transition-all duration-500 rounded px-2 -mx-2 py-1 border border-transparent",
-                        isHighlighted ? "bg-yellow-200 text-black shadow-sm border-yellow-300" : "hover:bg-stone-100/50"
-                      )}
-                    >
-                      {seg.text}
-                    </p>
-                  );
-                })}
+                <p className={cn("whitespace-pre-wrap break-words")}>
+                  {data?.text}
+                </p>
               </div>
             </div>
           </ScrollArea>
